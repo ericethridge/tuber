@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/tuber-banner.png" alt="tuber — Kubernetes Monitoring Integration for DoiT Cloud Intelligence Annotations (For GKE and EKS)" width="100%" />
+</p>
+
 # `tuber` — Kubernetes Workload Monitor for DoiT Cloud Analytics Annotations
 
 `tuber` is a lightweight, in-cluster Kubernetes monitoring agent written in Go (`client-go`) for **Google Kubernetes Engine (GKE)** and **Amazon EKS** clusters. It watches workload lifecycle changes across an explicit allowlist of namespaces, applies **smart workload rollup** so replica pod churn does not flood your cost charts, and automatically creates contextual annotations in **DoiT Cloud Intelligence** via the [DoiT Annotations API](https://developer.doit.com/docs/annotations-api) (`POST https://api.doit.com/analytics/v1/annotations`).
