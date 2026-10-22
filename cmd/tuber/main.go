@@ -76,6 +76,20 @@ func main() {
 	}
 
 	doitClient := doit.NewClient(cfg.DoiT, cfg.DryRun, doit.WithLogger(logger))
+	if !cfg.DryRun && cfg.DoiT.ValidateOnStartupEnabled() {
+		valCtx, cancelVal := context.WithTimeout(context.Background(), cfg.DoiT.Timeout)
+		valResp, err := doitClient.ValidateServiceAccount(valCtx)
+		cancelVal()
+		if err != nil {
+			logger.Error("DoiT Service Account token validation failed", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("validated DoiT Service Account token",
+			"domain", valResp.Domain,
+			"permissions", valResp.Permissions,
+		)
+	}
+
 	fmttr, err := formatter.New(cfg.DoiT)
 	if err != nil {
 		logger.Error("failed to initialize annotation formatter", "error", err)

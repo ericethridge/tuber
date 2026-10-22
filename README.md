@@ -25,12 +25,21 @@
 
 ---
 
-## DoiT API Authentication & Permissions
+## DoiT Service Account Authentication & Permissions
 
-Per the [DoiT Annotations API documentation](https://developer.doit.com/docs/annotations-api):
-- **Required Permission**: Your DoiT API token (Personal API token or Service Account token) must have the **Cloud Analytics Admin** permission to create annotations.
-- **Service Account Report Visibility**: Service accounts have no user email. Any DoiT Cloud Analytics reports referenced in `defaultReports`, rule `reports`, or `tuber.doit.com/reports` must be **shared organization-wide** or be **preset reports**.
-- **Multi-Tenant Tokens**: If your credential can access multiple tenants/customers, set `doit.tenantId` (or `DOIT_TENANT_ID`), which sends the `X-Tenant-Id` request header.
+Per [DoiT Getting Started — API Tokens](https://developer.doit.com/docs/start) and the [Annotations API documentation](https://developer.doit.com/docs/annotations-api), `tuber` is designed for **DoiT Service Account API tokens** (never deprecated legacy individual user API tokens):
+
+1. **Create a DoiT Service Account API Token**:
+   - Sign in to the [DoiT Console](https://console.doit.com/), click the **Gear icon** in the top navigation bar, and select **Users and access**.
+   - Select **Service Accounts** from the left-hand menu.
+   - Select your service account (or create one with the **Cloud Analytics Admin** role) and click **Create API token**.
+2. **Startup Guardrail Against Legacy / Individual User Tokens**:
+   - When `doit.validateOnStartup: true` and `doit.rejectUserTokens: true` (enabled by default in the Kustomize manifests), `tuber` validates the token against `GET https://api.doit.com/auth/v1/validate` at startup.
+   - Because DoiT Service Accounts have no user email (`email: ""`), any legacy or personal token that resolves to an individual user's email address is rejected immediately with a clear error message.
+3. **Service Account Report Visibility**:
+   - Because service accounts have no user email, any DoiT Cloud Analytics reports referenced in `defaultReports`, rule `reports`, or `tuber.doit.com/reports` must be **shared organization-wide** or be **preset reports** (private user-only reports are unreachable by service account tokens and return `403 Forbidden`).
+4. **Multi-Tenant Service Accounts (`X-Tenant-Id`)**:
+   - Service account tokens ignore the deprecated `?customerContext` query parameter used by legacy keys. If your service account can access multiple tenants/customers, set `doit.tenantId` (or `DOIT_TENANT_ID`), which sends the `X-Tenant-Id` request header.
 
 ---
 
@@ -57,13 +66,13 @@ go build -o bin/tuber ./cmd/tuber
 
 ## Deploying to GKE (GCP) and EKS (AWS)
 
-### 1. Create the DoiT Credentials Secret
-Either apply `deploy/kustomize/base/secret.example.yaml` with your real DoiT API token or use External Secrets Operator with **GCP Secret Manager** (`deploy/kustomize/overlays/gke/externalsecret-gcp.example.yaml`) or **AWS Secrets Manager** (`deploy/kustomize/overlays/eks/externalsecret-aws.example.yaml`):
+### 1. Create the DoiT Service Account Credentials Secret
+Either apply `deploy/kustomize/base/secret.example.yaml` with your DoiT Service Account API token or use External Secrets Operator with **GCP Secret Manager** (`deploy/kustomize/overlays/gke/externalsecret-gcp.example.yaml`) or **AWS Secrets Manager** (`deploy/kustomize/overlays/eks/externalsecret-aws.example.yaml`):
 
 ```bash
 kubectl create namespace tuber-system
 kubectl -n tuber-system create secret generic tuber-doit-credentials \
-  --from-literal=api-token="YOUR_DOIT_API_TOKEN" \
+  --from-literal=service-account-token="YOUR_DOIT_SERVICE_ACCOUNT_TOKEN" \
   --from-literal=tenant-id=""
 ```
 
