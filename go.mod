@@ -1,6 +1,6 @@
 module github.com/ericethridge/tuber
 
-go 1.27.3
+go 1.24.0
 
 require (
 	golang.org/x/time v0.11.0
