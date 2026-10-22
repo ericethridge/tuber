@@ -1,0 +1,382 @@
+package config
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"os"
+	"strings"
+	"text/template"
+	"time"
+
+	"github.com/ericethridge/tuber/internal/model"
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	DefaultDoiTBaseURL        = "https://api.doit.com"
+	DefaultContentTemplate    = "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+	DefaultRateLimitRPS       = 10.0
+	DefaultRateLimitBurst     = 20
+	DefaultHTTPTimeout        = 15 * time.Second
+	DefaultMaxRetries         = 3
+	DefaultDedupTTL           = 5 * time.Minute
+	DefaultWorkerCount        = 2
+	DefaultShutdownTimeout    = 15 * time.Second
+)
+
+// Config represents the top-level declarative configuration for tuber.
+type Config struct {
+	Cluster         ClusterConfig `yaml:"cluster"`
+	WatchNamespaces []string      `yaml:"watchNamespaces"`
+	DoiT            DoiTConfig    `yaml:"doit"`
+	Rollup          RollupConfig  `yaml:"rollup"`
+	Rules           []WatchRule   `yaml:"rules"`
+	DryRun          bool          `yaml:"dryRun"`
+}
+
+// ClusterConfig identifies the Kubernetes cluster and cloud environment.
+type ClusterConfig struct {
+	Name     string `yaml:"name"`
+	Provider string `yaml:"provider"` // e.g., "gcp-gke", "aws-eks"
+	Region   string `yaml:"region"`
+}
+
+// DoiTConfig configures authentication, targeting, and rate-limiting for the DoiT Annotations API.
+type DoiTConfig struct {
+	BaseURL         string        `yaml:"baseURL"`
+	APIToken        string        `yaml:"apiToken"`
+	APITokenFile    string        `yaml:"apiTokenFile"`
+	TenantID        string        `yaml:"tenantId"`
+	DefaultReports  []string      `yaml:"defaultReports"`
+	DefaultLabels   []string      `yaml:"defaultLabels"`
+	ContentTemplate string        `yaml:"contentTemplate"`
+	RateLimitRPS    float64       `yaml:"rateLimitRPS"`
+	RateLimitBurst  int           `yaml:"rateLimitBurst"`
+	Timeout         time.Duration `yaml:"timeout"`
+	MaxRetries      int           `yaml:"maxRetries"`
+}
+
+// RollupConfig controls workload noise suppression, deduplication, and worker concurrency.
+type RollupConfig struct {
+	IgnoreOwnedPods *bool         `yaml:"ignoreOwnedPods"`
+	TrackOOMKilled  *bool         `yaml:"trackOOMKilled"`
+	DedupTTL        time.Duration `yaml:"dedupTTL"`
+	ResyncPeriod    time.Duration `yaml:"resyncPeriod"`
+	Workers         int           `yaml:"workers"`
+}
+
+// IgnoreOwnedPodsEnabled returns whether ReplicaSet/Job-owned Pod lifecycle churn is suppressed.
+func (r RollupConfig) IgnoreOwnedPodsEnabled() bool {
+	if r.IgnoreOwnedPods == nil {
+		return true
+	}
+	return *r.IgnoreOwnedPods
+}
+
+// TrackOOMKilledEnabled returns whether container OOMKilled transitions are tracked on watched Pods.
+func (r RollupConfig) TrackOOMKilledEnabled() bool {
+	if r.TrackOOMKilled == nil {
+		return true
+	}
+	return *r.TrackOOMKilled
+}
+
+// WatchRule defines a declarative trigger rule for a Kubernetes resource kind.
+// In Phase 1 this backs Deployment, Job, and Pod watchers; in Phase 2 the same schema
+// drives dynamic informers for arbitrary GroupVersionResource targets.
+type WatchRule struct {
+	Name          string        `yaml:"name"`
+	APIVersion    string        `yaml:"apiVersion"`
+	Kind          string        `yaml:"kind"`
+	Namespaces    []string      `yaml:"namespaces,omitempty"`
+	LabelSelector string        `yaml:"labelSelector,omitempty"`
+	Actions       []model.Action `yaml:"actions"`
+	Reports       []string      `yaml:"reports,omitempty"`
+	Labels        []string      `yaml:"labels,omitempty"`
+}
+
+// AllowsAction checks if the given action is enabled by this rule.
+func (r WatchRule) AllowsAction(action model.Action) bool {
+	if len(r.Actions) == 0 {
+		return true
+	}
+	for _, a := range r.Actions {
+		if strings.EqualFold(string(a), string(action)) {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsNamespace checks if the given namespace is allowed by this rule's optional subset filter.
+func (r WatchRule) AllowsNamespace(ns string) bool {
+	if len(r.Namespaces) == 0 {
+		return true
+	}
+	for _, allowed := range r.Namespaces {
+		if allowed == ns {
+			return true
+		}
+	}
+	return false
+}
+
+// DefaultRules returns the standard Phase 1 workload lifecycle rules.
+func DefaultRules() []WatchRule {
+	return []WatchRule{
+		{
+			Name:       "deployments-lifecycle",
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+			Actions: []model.Action{
+				model.ActionCreated,
+				model.ActionScaled,
+				model.ActionRolledOut,
+				model.ActionDeleted,
+			},
+		},
+		{
+			Name:       "jobs-lifecycle",
+			APIVersion: "batch/v1",
+			Kind:       "Job",
+			Actions: []model.Action{
+				model.ActionCreated,
+				model.ActionCompleted,
+				model.ActionFailed,
+			},
+		},
+		{
+			Name:       "pods-standalone-and-oom",
+			APIVersion: "v1",
+			Kind:       "Pod",
+			Actions: []model.Action{
+				model.ActionCreated,
+				model.ActionDeleted,
+				model.ActionOOMKilled,
+			},
+		},
+	}
+}
+
+// Load reads a YAML configuration file, applies environment variable overrides and defaults,
+// loads secret files if configured, and validates the resulting configuration.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	return Parse(raw)
+}
+
+// Parse unmarshals YAML bytes, applies environment overrides, defaults, and validates the config.
+func Parse(raw []byte) (*Config, error) {
+	var cfg Config
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	if err := dec.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("decoding config yaml: %w", err)
+	}
+
+	applyEnvOverrides(&cfg)
+	if err := loadTokenFromFile(&cfg); err != nil {
+		return nil, err
+	}
+	applyDefaults(&cfg)
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+func applyEnvOverrides(cfg *Config) {
+	if v := strings.TrimSpace(os.Getenv("TUBER_CLUSTER_NAME")); v != "" {
+		cfg.Cluster.Name = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TUBER_CLOUD_PROVIDER")); v != "" {
+		cfg.Cluster.Provider = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TUBER_CLUSTER_REGION")); v != "" {
+		cfg.Cluster.Region = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TUBER_WATCH_NAMESPACES")); v != "" {
+		parts := strings.Split(v, ",")
+		var nsList []string
+		for _, p := range parts {
+			if trimmed := strings.TrimSpace(p); trimmed != "" {
+				nsList = append(nsList, trimmed)
+			}
+		}
+		cfg.WatchNamespaces = nsList
+	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_BASE_URL")); v != "" {
+		cfg.DoiT.BaseURL = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_API_TOKEN")); v != "" {
+		cfg.DoiT.APIToken = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_API_TOKEN_FILE")); v != "" {
+		cfg.DoiT.APITokenFile = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_TENANT_ID")); v != "" {
+		cfg.DoiT.TenantID = v
+	}
+	if v := strings.TrimSpace(os.Getenv("TUBER_DRY_RUN")); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes":
+			cfg.DryRun = true
+		case "false", "0", "no":
+			cfg.DryRun = false
+		}
+	}
+}
+
+func loadTokenFromFile(cfg *Config) error {
+	if cfg.DoiT.APIToken != "" || cfg.DoiT.APITokenFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(cfg.DoiT.APITokenFile)
+	if err != nil {
+		if cfg.DryRun && errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("reading DoiT API token file %q: %w", cfg.DoiT.APITokenFile, err)
+	}
+	cfg.DoiT.APIToken = strings.TrimSpace(string(data))
+	return nil
+}
+
+func applyDefaults(cfg *Config) {
+	if strings.TrimSpace(cfg.DoiT.BaseURL) == "" {
+		cfg.DoiT.BaseURL = DefaultDoiTBaseURL
+	}
+	cfg.DoiT.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.DoiT.BaseURL), "/")
+
+	if strings.TrimSpace(cfg.DoiT.ContentTemplate) == "" {
+		cfg.DoiT.ContentTemplate = DefaultContentTemplate
+	}
+	if cfg.DoiT.RateLimitRPS <= 0 {
+		cfg.DoiT.RateLimitRPS = DefaultRateLimitRPS
+	}
+	if cfg.DoiT.RateLimitBurst <= 0 {
+		cfg.DoiT.RateLimitBurst = DefaultRateLimitBurst
+	}
+	if cfg.DoiT.Timeout <= 0 {
+		cfg.DoiT.Timeout = DefaultHTTPTimeout
+	}
+	if cfg.DoiT.MaxRetries < 0 {
+		cfg.DoiT.MaxRetries = 0
+	} else if cfg.DoiT.MaxRetries == 0 {
+		cfg.DoiT.MaxRetries = DefaultMaxRetries
+	}
+
+	if cfg.Rollup.IgnoreOwnedPods == nil {
+		defaultTrue := true
+		cfg.Rollup.IgnoreOwnedPods = &defaultTrue
+	}
+	if cfg.Rollup.TrackOOMKilled == nil {
+		defaultTrue := true
+		cfg.Rollup.TrackOOMKilled = &defaultTrue
+	}
+	if cfg.Rollup.DedupTTL <= 0 {
+		cfg.Rollup.DedupTTL = DefaultDedupTTL
+	}
+	if cfg.Rollup.Workers <= 0 {
+		cfg.Rollup.Workers = DefaultWorkerCount
+	}
+
+	if len(cfg.Rules) == 0 {
+		cfg.Rules = DefaultRules()
+	}
+}
+
+// Validate checks that all required fields and invariants are satisfied.
+func (c *Config) Validate() error {
+	if strings.TrimSpace(c.Cluster.Name) == "" {
+		return errors.New("cluster.name is required")
+	}
+	if strings.TrimSpace(c.Cluster.Provider) == "" {
+		return errors.New("cluster.provider is required (e.g. 'gcp-gke' or 'aws-eks')")
+	}
+
+	if len(c.WatchNamespaces) == 0 {
+		return errors.New("watchNamespaces must contain at least one explicit namespace")
+	}
+
+	allowedNS := make(map[string]struct{}, len(c.WatchNamespaces))
+	dedupNS := make([]string, 0, len(c.WatchNamespaces))
+	for _, ns := range c.WatchNamespaces {
+		trimmed := strings.TrimSpace(ns)
+		if trimmed == "" {
+			return errors.New("watchNamespaces cannot contain empty namespace entries")
+		}
+		if trimmed == "*" || trimmed == "all" {
+			return fmt.Errorf("wildcard namespace %q is not allowed; specify an explicit namespace allowlist", trimmed)
+		}
+		if _, exists := allowedNS[trimmed]; !exists {
+			allowedNS[trimmed] = struct{}{}
+			dedupNS = append(dedupNS, trimmed)
+		}
+	}
+	c.WatchNamespaces = dedupNS
+
+	if !c.DryRun && strings.TrimSpace(c.DoiT.APIToken) == "" {
+		return errors.New("doit.apiToken (or DOIT_API_TOKEN / doit.apiTokenFile) is required when dryRun is false")
+	}
+
+	tmpl, err := template.New("annotation").Option("missingkey=error").Parse(c.DoiT.ContentTemplate)
+	if err != nil {
+		return fmt.Errorf("invalid doit.contentTemplate: %w", err)
+	}
+	sample := model.WorkloadEvent{
+		ClusterName:   c.Cluster.Name,
+		CloudProvider: c.Cluster.Provider,
+		Region:        c.Cluster.Region,
+		Namespace:     c.WatchNamespaces[0],
+		Kind:          "Deployment",
+		APIVersion:    "apps/v1",
+		Name:          "sample-app",
+		Action:        model.ActionCreated,
+		Summary:       "replicas=3 image=nginx:latest",
+		Timestamp:     time.Now().UTC(),
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, sample); err != nil {
+		return fmt.Errorf("executing doit.contentTemplate against sample event: %w", err)
+	}
+
+	for i, rule := range c.Rules {
+		if strings.TrimSpace(rule.Kind) == "" {
+			return fmt.Errorf("rules[%d].kind is required", i)
+		}
+		if strings.TrimSpace(rule.APIVersion) == "" {
+			return fmt.Errorf("rules[%d].apiVersion is required", i)
+		}
+		for _, rns := range rule.Namespaces {
+			if _, ok := allowedNS[rns]; !ok {
+				return fmt.Errorf("rules[%d] (%s) references namespace %q which is not in watchNamespaces", i, rule.Name, rns)
+			}
+		}
+	}
+
+	return nil
+}
+
+// MatchRule finds the first configured WatchRule matching the given apiVersion, kind, namespace, and action.
+func (c *Config) MatchRule(apiVersion, kind, namespace string, action model.Action) (*WatchRule, bool) {
+	for i := range c.Rules {
+		rule := &c.Rules[i]
+		if !strings.EqualFold(rule.APIVersion, apiVersion) || !strings.EqualFold(rule.Kind, kind) {
+			continue
+		}
+		if !rule.AllowsNamespace(namespace) {
+			continue
+		}
+		if !rule.AllowsAction(action) {
+			continue
+		}
+		return rule, true
+	}
+	return nil, false
+}

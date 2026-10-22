@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tuber-config
+  namespace: tuber-system
+data:
+  config.yaml: |
+    cluster:
+      name: eks-prod-us-east-1
+      provider: aws-eks
+      region: us-east-1
+
+    watchNamespaces:
+      - default
+      - production
+
+    doit:
+      baseURL: https://api.doit.com
+      apiTokenFile: /var/run/secrets/doit/api-token
+      contentTemplate: "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+      rateLimitRPS: 10.0
+      rateLimitBurst: 20
+      timeout: 15s
+      maxRetries: 3
+      defaultReports: []
+      defaultLabels: []
+
+    rollup:
+      ignoreOwnedPods: true
+      trackOOMKilled: true
+      dedupTTL: 5m
+      resyncPeriod: 0s
+      workers: 2
+
+    rules:
+      - name: deployments-lifecycle
+        apiVersion: apps/v1
+        kind: Deployment
+        actions:
+          - Created
+          - Scaled
+          - RolledOut
+          - Deleted
+      - name: jobs-lifecycle
+        apiVersion: batch/v1
+        kind: Job
+        actions:
+          - Created
+          - Completed
+          - Failed
+      - name: pods-standalone-and-oom
+        apiVersion: v1
+        kind: Pod
+        actions:
+          - Created
+          - Deleted
+          - OOMKilled
