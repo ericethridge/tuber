@@ -16,7 +16,9 @@ data:
 
     doit:
       baseURL: https://api.doit.com
-      apiTokenFile: /var/run/secrets/doit/api-token
+      serviceAccountTokenFile: /var/run/secrets/doit/service-account-token
+      validateOnStartup: true
+      rejectUserTokens: true
       contentTemplate: "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
       rateLimitRPS: 10.0
       rateLimitBurst: 20

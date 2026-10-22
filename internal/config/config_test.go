@@ -240,12 +240,42 @@ watchNamespaces:
   - default
 dryRun: true
 doit:
-  apiTokenFile: /nonexistent/path/to/doit/api-token
+  serviceAccountTokenFile: /nonexistent/path/to/doit/service-account-token
 `))
 	if err != nil {
-		t.Fatalf("expected dryRun=true to ignore missing apiTokenFile, got error: %v", err)
+		t.Fatalf("expected dryRun=true to ignore missing serviceAccountTokenFile, got error: %v", err)
 	}
 	if !cfg.DryRun {
 		t.Errorf("expected DryRun=true")
+	}
+}
+
+func TestServiceAccountTokenNormalizationAndEnv(t *testing.T) {
+	t.Setenv("DOIT_SERVICE_ACCOUNT_TOKEN", "  Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.sa-token  ")
+
+	cfg, err := Parse([]byte(`
+cluster:
+  name: prod-gke
+  provider: gcp-gke
+watchNamespaces:
+  - production
+doit:
+  validateOnStartup: true
+`))
+	if err != nil {
+		t.Fatalf("Parse() error: %v", err)
+	}
+	want := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.sa-token"
+	if cfg.DoiT.ServiceAccountToken != want {
+		t.Errorf("ServiceAccountToken = %q, want %q", cfg.DoiT.ServiceAccountToken, want)
+	}
+	if cfg.DoiT.APIToken != want {
+		t.Errorf("APIToken alias = %q, want %q", cfg.DoiT.APIToken, want)
+	}
+	if !cfg.DoiT.ValidateOnStartupEnabled() {
+		t.Error("expected ValidateOnStartupEnabled() == true")
+	}
+	if !cfg.DoiT.RejectUserTokensEnabled() {
+		t.Error("expected RejectUserTokensEnabled() to default to true")
 	}
 }

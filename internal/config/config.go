@@ -43,18 +43,43 @@ type ClusterConfig struct {
 }
 
 // DoiTConfig configures authentication, targeting, and rate-limiting for the DoiT Annotations API.
+// Per https://developer.doit.com/docs/start, shared cluster automation should authenticate using a
+// DoiT Service Account API token (created under DoiT Console -> Users and access -> Service Accounts),
+// never a deprecated legacy individual API token.
 type DoiTConfig struct {
-	BaseURL         string        `yaml:"baseURL"`
-	APIToken        string        `yaml:"apiToken"`
-	APITokenFile    string        `yaml:"apiTokenFile"`
-	TenantID        string        `yaml:"tenantId"`
-	DefaultReports  []string      `yaml:"defaultReports"`
-	DefaultLabels   []string      `yaml:"defaultLabels"`
-	ContentTemplate string        `yaml:"contentTemplate"`
-	RateLimitRPS    float64       `yaml:"rateLimitRPS"`
-	RateLimitBurst  int           `yaml:"rateLimitBurst"`
-	Timeout         time.Duration `yaml:"timeout"`
-	MaxRetries      int           `yaml:"maxRetries"`
+	BaseURL                 string        `yaml:"baseURL"`
+	ServiceAccountToken     string        `yaml:"serviceAccountToken"`
+	ServiceAccountTokenFile string        `yaml:"serviceAccountTokenFile"`
+	// APIToken and APITokenFile are retained as backward-compatible aliases for ServiceAccountToken / ServiceAccountTokenFile.
+	APIToken          string        `yaml:"apiToken,omitempty"`
+	APITokenFile      string        `yaml:"apiTokenFile,omitempty"`
+	TenantID          string        `yaml:"tenantId"`
+	ValidateOnStartup *bool         `yaml:"validateOnStartup,omitempty"`
+	RejectUserTokens  *bool         `yaml:"rejectUserTokens,omitempty"`
+	DefaultReports    []string      `yaml:"defaultReports"`
+	DefaultLabels     []string      `yaml:"defaultLabels"`
+	ContentTemplate   string        `yaml:"contentTemplate"`
+	RateLimitRPS      float64       `yaml:"rateLimitRPS"`
+	RateLimitBurst    int           `yaml:"rateLimitBurst"`
+	Timeout           time.Duration `yaml:"timeout"`
+	MaxRetries        int           `yaml:"maxRetries"`
+}
+
+// ValidateOnStartupEnabled returns whether tuber should call GET /auth/v1/validate at startup.
+func (d DoiTConfig) ValidateOnStartupEnabled() bool {
+	if d.ValidateOnStartup == nil {
+		return false
+	}
+	return *d.ValidateOnStartup
+}
+
+// RejectUserTokensEnabled returns whether GET /auth/v1/validate should reject tokens that resolve
+// to an individual user email (legacy or personal API tokens) rather than a DoiT Service Account.
+func (d DoiTConfig) RejectUserTokensEnabled() bool {
+	if d.RejectUserTokens == nil {
+		return true
+	}
+	return *d.RejectUserTokens
 }
 
 // RollupConfig controls workload noise suppression, deduplication, and worker concurrency.
@@ -216,11 +241,27 @@ func applyEnvOverrides(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("DOIT_API_TOKEN")); v != "" {
 		cfg.DoiT.APIToken = v
 	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_SERVICE_ACCOUNT_TOKEN")); v != "" {
+		cfg.DoiT.ServiceAccountToken = v
+	}
 	if v := strings.TrimSpace(os.Getenv("DOIT_API_TOKEN_FILE")); v != "" {
 		cfg.DoiT.APITokenFile = v
 	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_SERVICE_ACCOUNT_TOKEN_FILE")); v != "" {
+		cfg.DoiT.ServiceAccountTokenFile = v
+	}
 	if v := strings.TrimSpace(os.Getenv("DOIT_TENANT_ID")); v != "" {
 		cfg.DoiT.TenantID = v
+	}
+	if v := strings.TrimSpace(os.Getenv("DOIT_VALIDATE_ON_STARTUP")); v != "" {
+		switch strings.ToLower(v) {
+		case "true", "1", "yes":
+			b := true
+			cfg.DoiT.ValidateOnStartup = &b
+		case "false", "0", "no":
+			b := false
+			cfg.DoiT.ValidateOnStartup = &b
+		}
 	}
 	if v := strings.TrimSpace(os.Getenv("TUBER_DRY_RUN")); v != "" {
 		switch strings.ToLower(v) {
@@ -233,18 +274,37 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func loadTokenFromFile(cfg *Config) error {
-	if cfg.DoiT.APIToken != "" || cfg.DoiT.APITokenFile == "" {
-		return nil
+	// Normalize ServiceAccountToken <-> APIToken aliases.
+	if strings.TrimSpace(cfg.DoiT.ServiceAccountToken) == "" && strings.TrimSpace(cfg.DoiT.APIToken) != "" {
+		cfg.DoiT.ServiceAccountToken = cfg.DoiT.APIToken
 	}
-	data, err := os.ReadFile(cfg.DoiT.APITokenFile)
-	if err != nil {
-		if cfg.DryRun && errors.Is(err, os.ErrNotExist) {
-			return nil
+	if strings.TrimSpace(cfg.DoiT.ServiceAccountTokenFile) == "" && strings.TrimSpace(cfg.DoiT.APITokenFile) != "" {
+		cfg.DoiT.ServiceAccountTokenFile = cfg.DoiT.APITokenFile
+	}
+
+	if strings.TrimSpace(cfg.DoiT.ServiceAccountToken) == "" && strings.TrimSpace(cfg.DoiT.ServiceAccountTokenFile) != "" {
+		data, err := os.ReadFile(cfg.DoiT.ServiceAccountTokenFile)
+		if err != nil {
+			if cfg.DryRun && errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("reading DoiT Service Account token file %q: %w", cfg.DoiT.ServiceAccountTokenFile, err)
 		}
-		return fmt.Errorf("reading DoiT API token file %q: %w", cfg.DoiT.APITokenFile, err)
+		cfg.DoiT.ServiceAccountToken = string(data)
 	}
-	cfg.DoiT.APIToken = strings.TrimSpace(string(data))
+
+	normalized := normalizeBearerToken(cfg.DoiT.ServiceAccountToken)
+	cfg.DoiT.ServiceAccountToken = normalized
+	cfg.DoiT.APIToken = normalized
 	return nil
+}
+
+func normalizeBearerToken(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) >= 7 && strings.EqualFold(trimmed[:7], "bearer ") {
+		trimmed = strings.TrimSpace(trimmed[7:])
+	}
+	return trimmed
 }
 
 func applyDefaults(cfg *Config) {
@@ -269,6 +329,10 @@ func applyDefaults(cfg *Config) {
 		cfg.DoiT.MaxRetries = 0
 	} else if cfg.DoiT.MaxRetries == 0 {
 		cfg.DoiT.MaxRetries = DefaultMaxRetries
+	}
+	if cfg.DoiT.RejectUserTokens == nil {
+		defaultTrue := true
+		cfg.DoiT.RejectUserTokens = &defaultTrue
 	}
 
 	if cfg.Rollup.IgnoreOwnedPods == nil {
@@ -321,8 +385,8 @@ func (c *Config) Validate() error {
 	}
 	c.WatchNamespaces = dedupNS
 
-	if !c.DryRun && strings.TrimSpace(c.DoiT.APIToken) == "" {
-		return errors.New("doit.apiToken (or DOIT_API_TOKEN / doit.apiTokenFile) is required when dryRun is false")
+	if !c.DryRun && strings.TrimSpace(c.DoiT.ServiceAccountToken) == "" {
+		return errors.New("doit.serviceAccountToken (or DOIT_SERVICE_ACCOUNT_TOKEN / doit.serviceAccountTokenFile / doit.apiToken) is required when dryRun is false")
 	}
 
 	tmpl, err := template.New("annotation").Option("missingkey=error").Parse(c.DoiT.ContentTemplate)
