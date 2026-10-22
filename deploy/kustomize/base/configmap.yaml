@@ -15,7 +15,6 @@ data:
     # Explicit allowlist of namespaces to watch (required).
     watchNamespaces:
       - default
-      - production
 
     doit:
       baseURL: https://api.doit.com
