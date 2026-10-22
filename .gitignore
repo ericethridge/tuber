@@ -1,0 +1,21 @@
+# Binaries
+bin/
+/tuber
+*.exe
+*.out
+
+# Test & coverage artifacts
+*.test
+coverage.out
+
+# Local agent / IDE directories
+.kimchi/
+.idea/
+.vscode/
+.DS_Store
+
+# Local secrets or kubeconfigs
+*.kubeconfig
+*.secret.yaml
+!deploy/kustomize/base/secret.example.yaml
+!deploy/kustomize/overlays/*/externalsecret-*.example.yaml
