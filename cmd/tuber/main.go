@@ -46,7 +46,15 @@ func main() {
 		_ = os.Setenv("TUBER_DRY_RUN", "true")
 	}
 
-	cfg, err := config.Load(*configPath)
+	var (
+		cfg *config.Config
+		err error
+	)
+	if *validateOnly {
+		cfg, err = config.LoadValidation(*configPath)
+	} else {
+		cfg, err = config.Load(*configPath)
+	}
 	if err != nil {
 		logger.Error("configuration validation failed", "path", *configPath, "error", err)
 		os.Exit(1)
