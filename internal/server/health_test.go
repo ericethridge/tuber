@@ -20,6 +20,12 @@ func TestHealthAndReadyEndpoints(t *testing.T) {
 	if recHealth.Code != http.StatusOK {
 		t.Fatalf("/healthz status = %d, want 200", recHealth.Code)
 	}
+	if got := recHealth.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := recHealth.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
 
 	// 2. /readyz before sync is 503 Service Unavailable.
 	reqReady1 := httptest.NewRequest(http.MethodGet, "/readyz", nil)

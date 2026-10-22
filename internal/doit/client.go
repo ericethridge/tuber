@@ -176,6 +176,9 @@ func NewClient(cfg config.DoiTConfig, dryRun bool, opts ...Option) *Client {
 		limiter:          rate.NewLimiter(rate.Limit(rps), burst),
 		httpClient: &http.Client{
 			Timeout: timeout,
+			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+				return fmt.Errorf("refusing to follow HTTP redirect to %q to prevent Bearer token leakage", req.URL.Redacted())
+			},
 		},
 		logger: slog.Default(),
 	}

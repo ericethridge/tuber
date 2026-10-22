@@ -168,6 +168,20 @@ rules:
 `,
 			wantErr: "not in watchNamespaces",
 		},
+		{
+			name: "cleartext http baseURL to remote host rejected",
+			yaml: `
+cluster:
+  name: eks-1
+  provider: aws-eks
+watchNamespaces:
+  - production
+doit:
+  baseURL: http://api.doit.com
+  serviceAccountToken: token
+`,
+			wantErr: "must use https://",
+		},
 	}
 
 	for _, tc := range tests {

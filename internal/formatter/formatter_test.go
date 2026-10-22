@@ -2,6 +2,7 @@ package formatter
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,5 +59,54 @@ func TestFormatterRendersTemplateAndMergesMetadata(t *testing.T) {
 	wantLabels := []string{"lbl-global", "lbl-rule", "lbl-k8s-annotation"}
 	if !reflect.DeepEqual(req.Labels, wantLabels) {
 		t.Errorf("Labels = %v, want %v", req.Labels, wantLabels)
+	}
+}
+
+func TestFormatterSanitizesControlCharsInvalidIDsAndCapsLength(t *testing.T) {
+	f, err := New(config.DoiTConfig{
+		ContentTemplate: config.DefaultContentTemplate,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	overrides := model.ExtractAnnotationOverrides(map[string]string{
+		model.AnnotationReports: "valid-rep_1, invalid id with spaces, ../traversal, <script>, valid-rep-2",
+		model.AnnotationLabels:  "lbl_ok_1,bad$label,lbl_ok_2",
+	})
+
+	ev := model.WorkloadEvent{
+		ClusterName:   "eks-prod",
+		CloudProvider: "aws-eks",
+		Namespace:     "production",
+		Kind:          "Pod",
+		Name:          "worker-1",
+		Action:        model.ActionCreated,
+		Summary:       "line1\nline2\x00with-null-and-" + strings.Repeat("A", 1500),
+		Timestamp:     time.Date(2026, 10, 22, 10, 0, 0, 0, time.UTC),
+		ReportIDs:     overrides.Reports,
+		LabelIDs:      overrides.Labels,
+	}
+
+	req, err := f.Format(ev)
+	if err != nil {
+		t.Fatalf("Format() error: %v", err)
+	}
+
+	if strings.ContainsAny(req.Content, "\n\r\x00") {
+		t.Errorf("expected control characters stripped from Content, got %q", req.Content)
+	}
+	if len([]rune(req.Content)) > MaxAnnotationContentLength {
+		t.Errorf("Content length = %d, exceeds MaxAnnotationContentLength (%d)", len([]rune(req.Content)), MaxAnnotationContentLength)
+	}
+
+	wantReports := []string{"valid-rep_1", "valid-rep-2"}
+	if !reflect.DeepEqual(req.Reports, wantReports) {
+		t.Errorf("Reports = %v, want %v (invalid IDs rejected)", req.Reports, wantReports)
+	}
+
+	wantLabels := []string{"lbl_ok_1", "lbl_ok_2"}
+	if !reflect.DeepEqual(req.Labels, wantLabels) {
+		t.Errorf("Labels = %v, want %v (invalid IDs rejected)", req.Labels, wantLabels)
 	}
 }
