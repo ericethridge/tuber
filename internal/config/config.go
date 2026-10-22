@@ -35,6 +35,8 @@ type Config struct {
 	Rollup          RollupConfig  `yaml:"rollup"`
 	Rules           []WatchRule   `yaml:"rules"`
 	DryRun          bool          `yaml:"dryRun"`
+
+	validateOnly bool `yaml:"-"`
 }
 
 // ClusterConfig identifies the Kubernetes cluster and cloud environment.
@@ -186,8 +188,9 @@ func DefaultRules() []WatchRule {
 	}
 }
 
-// Load reads a YAML configuration file, applies environment variable overrides and defaults,
-// loads secret files if configured, and validates the resulting configuration.
+// Load reads a YAML configuration file (or a Kubernetes ConfigMap YAML manifest containing
+// data["config.yaml"]), applies environment variable overrides and defaults, loads secret files
+// if configured, and validates the resulting configuration.
 func Load(path string) (*Config, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -196,10 +199,58 @@ func Load(path string) (*Config, error) {
 	return Parse(raw)
 }
 
-// Parse unmarshals YAML bytes, applies environment overrides, defaults, and validates the config.
+// LoadValidation reads and validates a configuration file (or Kubernetes ConfigMap manifest)
+// for CLI --validate-only checks without requiring in-cluster secret volume files to exist on the local host.
+func LoadValidation(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	return parseInternal(raw, true)
+}
+
+// Parse unmarshals YAML bytes (unwrapping a Kubernetes ConfigMap if present),
+// applies environment overrides, defaults, and validates the config.
 func Parse(raw []byte) (*Config, error) {
+	return parseInternal(raw, false)
+}
+
+type k8sConfigMapEnvelope struct {
+	APIVersion string            `yaml:"apiVersion"`
+	Kind       string            `yaml:"kind"`
+	Metadata   map[string]any    `yaml:"metadata"`
+	Data       map[string]string `yaml:"data"`
+}
+
+func unwrapConfigMapIfPresent(raw []byte) ([]byte, error) {
+	var env k8sConfigMapEnvelope
+	if err := yaml.Unmarshal(raw, &env); err == nil {
+		if strings.EqualFold(strings.TrimSpace(env.Kind), "ConfigMap") && strings.TrimSpace(env.APIVersion) != "" {
+			if inner, ok := env.Data["config.yaml"]; ok && strings.TrimSpace(inner) != "" {
+				return []byte(inner), nil
+			}
+			if len(env.Data) == 1 {
+				for _, v := range env.Data {
+					if strings.TrimSpace(v) != "" {
+						return []byte(v), nil
+					}
+				}
+			}
+			return nil, errors.New("Kubernetes ConfigMap does not contain a non-empty 'config.yaml' entry under data")
+		}
+	}
+	return raw, nil
+}
+
+func parseInternal(raw []byte, validateOnly bool) (*Config, error) {
+	unwrapped, err := unwrapConfigMapIfPresent(raw)
+	if err != nil {
+		return nil, err
+	}
+
 	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	cfg.validateOnly = validateOnly
+	dec := yaml.NewDecoder(bytes.NewReader(unwrapped))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, fmt.Errorf("decoding config yaml: %w", err)
@@ -287,7 +338,7 @@ func loadTokenFromFile(cfg *Config) error {
 	if strings.TrimSpace(cfg.DoiT.ServiceAccountToken) == "" && strings.TrimSpace(cfg.DoiT.ServiceAccountTokenFile) != "" {
 		data, err := os.ReadFile(cfg.DoiT.ServiceAccountTokenFile)
 		if err != nil {
-			if cfg.DryRun && errors.Is(err, os.ErrNotExist) {
+			if (cfg.DryRun || cfg.validateOnly) && errors.Is(err, os.ErrNotExist) {
 				return nil
 			}
 			return fmt.Errorf("reading DoiT Service Account token file %q: %w", cfg.DoiT.ServiceAccountTokenFile, err)
@@ -391,7 +442,9 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if !c.DryRun && strings.TrimSpace(c.DoiT.ServiceAccountToken) == "" {
+	hasToken := strings.TrimSpace(c.DoiT.ServiceAccountToken) != ""
+	hasTokenFileRef := c.validateOnly && strings.TrimSpace(c.DoiT.ServiceAccountTokenFile) != ""
+	if !c.DryRun && !hasToken && !hasTokenFileRef {
 		return errors.New("doit.serviceAccountToken (or DOIT_SERVICE_ACCOUNT_TOKEN / doit.serviceAccountTokenFile / doit.apiToken) is required when dryRun is false")
 	}
 
