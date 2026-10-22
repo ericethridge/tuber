@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	annotationsPath = "/analytics/v1/annotations"
-	userAgent       = "tuber-k8s-monitor/1.0"
+	annotationsPath             = "/analytics/v1/annotations"
+	validatePath                = "/auth/v1/validate"
+	cloudAnalyticsAdminPerm     = "CloudAnalyticsAdmin"
+	userAgent                   = "tuber-k8s-monitor/1.0"
 )
 
 // CreateAnnotationRequest matches the DoiT Annotations API CreateAnnotationRequest schema.
@@ -48,10 +50,21 @@ type AnnotationResponse struct {
 	UpdateTime string      `json:"updateTime,omitempty"`
 }
 
-// errorResponse matches DoiT's standard error JSON payload.
+// ValidateResponse matches the DoiT Auth API GET /auth/v1/validate response schema.
+// Per https://developer.doit.com/docs/start, DoiT Service Accounts have no user email (Email == ""),
+// whereas legacy individual API tokens and personal API tokens return a user's email address.
+type ValidateResponse struct {
+	Domain      string   `json:"domain"`
+	Email       string   `json:"email"`
+	Permissions []string `json:"permissions,omitempty"`
+}
+
+// errorResponse matches DoiT's vendor error JSON envelope.
 type errorResponse struct {
+	Code    string `json:"code"`
 	Error   string `json:"error"`
 	Message string `json:"message"`
+	Detail  string `json:"detail"`
 }
 
 // APIError represents an HTTP error returned by the DoiT API.
@@ -78,23 +91,25 @@ func IsPermanent(err error) bool {
 	return false
 }
 
-// Sink is the interface for delivering formatted DoiT annotations.
+// Sink is the interface for delivering formatted DoiT annotations and validating Service Account credentials.
 type Sink interface {
 	CreateAnnotation(ctx context.Context, req CreateAnnotationRequest) (*AnnotationResponse, error)
+	ValidateServiceAccount(ctx context.Context) (*ValidateResponse, error)
 	Ping(ctx context.Context) error
 }
 
-// Client is an HTTP client for the DoiT Cloud Intelligence Annotations API.
+// Client is an HTTP client for the DoiT Cloud Intelligence Annotations API using a Service Account token.
 type Client struct {
-	baseURL     string
-	apiToken    string
-	tenantID    string
-	dryRun      bool
-	maxRetries  int
-	baseBackoff time.Duration
-	limiter     *rate.Limiter
-	httpClient  *http.Client
-	logger      *slog.Logger
+	baseURL          string
+	apiToken         string
+	tenantID         string
+	dryRun           bool
+	rejectUserTokens bool
+	maxRetries       int
+	baseBackoff      time.Duration
+	limiter          *rate.Limiter
+	httpClient       *http.Client
+	logger           *slog.Logger
 }
 
 // Option customizes a Client instance (primarily for testing).
@@ -142,14 +157,23 @@ func NewClient(cfg config.DoiTConfig, dryRun bool, opts ...Option) *Client {
 		timeout = config.DefaultHTTPTimeout
 	}
 
+	token := strings.TrimSpace(cfg.ServiceAccountToken)
+	if token == "" {
+		token = strings.TrimSpace(cfg.APIToken)
+	}
+	if len(token) >= 7 && strings.EqualFold(token[:7], "bearer ") {
+		token = strings.TrimSpace(token[7:])
+	}
+
 	c := &Client{
-		baseURL:     strings.TrimRight(cfg.BaseURL, "/"),
-		apiToken:    cfg.APIToken,
-		tenantID:    cfg.TenantID,
-		dryRun:      dryRun,
-		maxRetries:  cfg.MaxRetries,
-		baseBackoff: 250 * time.Millisecond,
-		limiter:     rate.NewLimiter(rate.Limit(rps), burst),
+		baseURL:          strings.TrimRight(cfg.BaseURL, "/"),
+		apiToken:         token,
+		tenantID:         cfg.TenantID,
+		dryRun:           dryRun,
+		rejectUserTokens: cfg.RejectUserTokensEnabled(),
+		maxRetries:       cfg.MaxRetries,
+		baseBackoff:      250 * time.Millisecond,
+		limiter:          rate.NewLimiter(rate.Limit(rps), burst),
 		httpClient: &http.Client{
 			Timeout: timeout,
 		},
@@ -248,6 +272,76 @@ func (c *Client) CreateAnnotation(ctx context.Context, req CreateAnnotationReque
 	return nil, lastErr
 }
 
+// ValidateServiceAccount calls GET /auth/v1/validate to verify the DoiT token and tenant context,
+// and ensures that the token belongs to a DoiT Service Account (which has no user email) rather than
+// a deprecated legacy individual API token or personal user token when rejectUserTokens is enabled.
+func (c *Client) ValidateServiceAccount(ctx context.Context) (*ValidateResponse, error) {
+	if c.dryRun && strings.TrimSpace(c.apiToken) == "" {
+		return &ValidateResponse{Domain: "dry-run.local"}, nil
+	}
+
+	if err := c.limiter.Wait(ctx); err != nil {
+		return nil, err
+	}
+
+	endpoint := c.baseURL + validatePath
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating ValidateServiceAccount request: %w", err)
+	}
+	c.setHeaders(httpReq)
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("executing GET %s: %w", validatePath, err)
+	}
+	bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	_ = resp.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("reading %s response: %w", validatePath, readErr)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseAPIError(resp, bodyBytes)
+	}
+
+	var out ValidateResponse
+	if len(bodyBytes) > 0 {
+		if err := json.Unmarshal(bodyBytes, &out); err != nil {
+			return nil, fmt.Errorf("decoding %s response: %w", validatePath, err)
+		}
+	}
+
+	if c.rejectUserTokens && strings.TrimSpace(out.Email) != "" {
+		return nil, &APIError{
+			StatusCode: http.StatusForbidden,
+			Permanent:  true,
+			Message: fmt.Sprintf(
+				"token resolved to individual user account %q (domain %q); tuber requires a DoiT Service Account API token (which has no user email) — create one in DoiT Console -> Users and access -> Service Accounts (see https://developer.doit.com/docs/start)",
+				out.Email, out.Domain,
+			),
+		}
+	}
+
+	if len(out.Permissions) > 0 && !containsPermission(out.Permissions, cloudAnalyticsAdminPerm) {
+		c.logger.Warn("DoiT Service Account token is missing CloudAnalyticsAdmin in reported permissions; creating annotations may fail with HTTP 403",
+			"domain", out.Domain,
+			"permissions", out.Permissions,
+		)
+	}
+
+	return &out, nil
+}
+
+func containsPermission(perms []string, target string) bool {
+	for _, p := range perms {
+		if strings.EqualFold(strings.TrimSpace(p), target) {
+			return true
+		}
+	}
+	return false
+}
+
 // Ping verifies credentials and connectivity via GET /analytics/v1/annotations?maxResults=1.
 func (c *Client) Ping(ctx context.Context) error {
 	if c.dryRun && strings.TrimSpace(c.apiToken) == "" {
@@ -296,14 +390,24 @@ func parseAPIError(resp *http.Response, body []byte) *APIError {
 	msg := strings.TrimSpace(string(body))
 	var parsed errorResponse
 	if json.Unmarshal(body, &parsed) == nil {
-		if parsed.Error != "" {
+		switch {
+		case parsed.Error != "":
 			msg = parsed.Error
-		} else if parsed.Message != "" {
+		case parsed.Message != "":
 			msg = parsed.Message
+		case parsed.Detail != "":
+			msg = parsed.Detail
+		}
+		if parsed.Code == "tenant_id_required" || parsed.Code == "tenant_id_mismatch" {
+			msg = fmt.Sprintf("%s (code=%s; set doit.tenantId / X-Tenant-Id header for multi-tenant Service Account tokens)", msg, parsed.Code)
 		}
 	}
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		msg = fmt.Sprintf("%s (ensure the DoiT Service Account has Cloud Analytics Admin permission and any targeted reports are shared organization-wide or preset)", msg)
 	}
 
 	permanent := resp.StatusCode == http.StatusBadRequest ||
