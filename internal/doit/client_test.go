@@ -186,3 +186,48 @@ func TestDryRunDoesNotSendHTTPRequest(t *testing.T) {
 		t.Errorf("resp.ID = %q, want dry-run-annotation-id", resp.ID)
 	}
 }
+
+func TestValidateServiceAccountAcceptsServiceAccountAndRejectsUserToken(t *testing.T) {
+	var returnEmail string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/auth/v1/validate" {
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(ValidateResponse{
+			Domain:      "acme.example.com",
+			Email:       returnEmail,
+			Permissions: []string{"CloudAnalyticsAdmin"},
+		})
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.DoiTConfig{
+		BaseURL:             srv.URL,
+		ServiceAccountToken: "Bearer sa-jwt-token-123",
+		TenantID:            "tenant-1",
+	}, false)
+
+	// 1. Service Account token has no user email (Email: "") -> succeeds.
+	returnEmail = ""
+	valResp, err := client.ValidateServiceAccount(context.Background())
+	if err != nil {
+		t.Fatalf("expected Service Account token (empty email) to pass validation, got error: %v", err)
+	}
+	if valResp.Domain != "acme.example.com" {
+		t.Errorf("Domain = %q, want acme.example.com", valResp.Domain)
+	}
+
+	// 2. Legacy / individual personal token returns a user email -> rejected with actionable error.
+	returnEmail = "engineer@acme.example.com"
+	_, err = client.ValidateServiceAccount(context.Background())
+	if err == nil {
+		t.Fatal("expected individual/legacy user token with email to be rejected, got nil")
+	}
+	if !IsPermanent(err) {
+		t.Errorf("expected permanent error for user token rejection, got: %v", err)
+	}
+}
