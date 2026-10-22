@@ -25,6 +25,13 @@ const (
 	AnnotationWatch   = "tuber.doit.com/watch"
 	AnnotationReports = "tuber.doit.com/reports"
 	AnnotationLabels  = "tuber.doit.com/labels"
+
+	// MaxOverrideIDs caps the number of DoiT report or label IDs extracted per resource or request.
+	MaxOverrideIDs = 20
+	// MaxIDLength caps the length of a single DoiT report or label ID.
+	MaxIDLength = 64
+	// MaxAnnotationInputLength caps the raw K8s annotation value length inspected by splitCSV.
+	MaxAnnotationInputLength = 2048
 )
 
 // WorkloadEvent represents a normalized, actionable Kubernetes resource lifecycle change
@@ -81,6 +88,9 @@ func ExtractAnnotationOverrides(annotations map[string]string) AnnotationOverrid
 }
 
 func splitCSV(raw string) []string {
+	if len(raw) > MaxAnnotationInputLength {
+		raw = raw[:MaxAnnotationInputLength]
+	}
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
@@ -89,15 +99,58 @@ func splitCSV(raw string) []string {
 	seen := make(map[string]struct{}, len(parts))
 	for _, p := range parts {
 		trimmed := strings.TrimSpace(p)
-		if trimmed == "" {
+		if !IsValidDoiTID(trimmed) {
 			continue
 		}
 		if _, exists := seen[trimmed]; !exists {
 			seen[trimmed] = struct{}{}
 			out = append(out, trimmed)
+			if len(out) >= MaxOverrideIDs {
+				break
+			}
 		}
 	}
 	return out
+}
+
+// IsValidDoiTID validates that a DoiT report or label identifier consists strictly of
+// 1..64 ASCII alphanumeric, hyphen, or underscore characters.
+func IsValidDoiTID(id string) bool {
+	if len(id) == 0 || len(id) > MaxIDLength {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		if !isAlphaNum && c != '-' && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// SanitizeText strips ASCII control characters (replacing newlines/tabs with single spaces)
+// and caps the string at maxRunes runes.
+func SanitizeText(s string, maxRunes int) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	count := 0
+	for _, r := range s {
+		if maxRunes > 0 && count >= maxRunes {
+			break
+		}
+		if r == '\n' || r == '\r' || r == '\t' {
+			b.WriteByte(' ')
+			count++
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+		count++
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func isTruthy(val string) bool {
@@ -109,19 +162,23 @@ func isTruthy(val string) bool {
 	}
 }
 
-// MergeUniqueStrings merges multiple string slices preserving order and removing duplicates/blanks.
+// MergeUniqueStrings merges multiple string slices preserving order, validating DoiT ID format,
+// removing duplicates/blanks, and capping at MaxOverrideIDs.
 func MergeUniqueStrings(slices ...[]string) []string {
 	var out []string
 	seen := make(map[string]struct{})
 	for _, s := range slices {
 		for _, item := range s {
 			trimmed := strings.TrimSpace(item)
-			if trimmed == "" {
+			if !IsValidDoiTID(trimmed) {
 				continue
 			}
 			if _, ok := seen[trimmed]; !ok {
 				seen[trimmed] = struct{}{}
 				out = append(out, trimmed)
+				if len(out) >= MaxOverrideIDs {
+					return out
+				}
 			}
 		}
 	}
