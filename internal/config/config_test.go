@@ -293,3 +293,20 @@ doit:
 		t.Error("expected RejectUserTokensEnabled() to default to true")
 	}
 }
+
+func TestLoadValidationUnwrapsKubernetesConfigMapManifests(t *testing.T) {
+	paths := []string{
+		filepath.Join("..", "..", "deploy", "kustomize", "base", "configmap.yaml"),
+		filepath.Join("..", "..", "deploy", "kustomize", "overlays", "gke", "patch-config.yaml"),
+		filepath.Join("..", "..", "deploy", "kustomize", "overlays", "eks", "patch-config.yaml"),
+	}
+	for _, p := range paths {
+		cfg, err := LoadValidation(p)
+		if err != nil {
+			t.Fatalf("LoadValidation(%q) unexpected error: %v", p, err)
+		}
+		if len(cfg.WatchNamespaces) == 0 {
+			t.Errorf("LoadValidation(%q) returned empty WatchNamespaces", p)
+		}
+	}
+}
