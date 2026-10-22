@@ -109,42 +109,22 @@ kubectl apply -k deploy/kustomize/overlays/eks
 
 The `tuber-config` `ConfigMap` mounts `config.yaml` into the pod at `/etc/tuber/config.yaml`. Below is a complete guide to expanding namespaces, targeting DoiT reports and labels, customizing templates, and adding routing rules.
 
-### 1. Adding Watched Namespaces (`watchNamespaces` + RBAC)
+### 1. Adding Watched Namespaces (`watchNamespaces`)
 
-`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). Out of the box, `default` and `production` are watched.
+`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). Out of the box, only the `default` namespace (which exists in every Kubernetes cluster) is watched.
 
-Because `tuber` uses least-privilege, namespace-scoped `RoleBinding` resources in `deploy/kustomize/base/rbac.yaml`, adding a new namespace (for example, `payments` or `staging`) is a **two-step process**:
+To watch additional namespaces in your cluster, add them to `watchNamespaces` in your overlay `ConfigMap` (`deploy/kustomize/overlays/gke/patch-config.yaml` or `deploy/kustomize/overlays/eks/patch-config.yaml`, or `deploy/kustomize/base/configmap.yaml` if applying `base/`):
 
-**Step A — Add the namespace to `watchNamespaces` in your overlay `ConfigMap`** (`patch-config.yaml`):
 ```yaml
     watchNamespaces:
       - default
-      - production
+      - my-app-namespace
       - payments
-      - staging
 ```
 
-**Step B — Grant read-only watch permissions in the new namespace** (`deploy/kustomize/base/rbac.yaml` or an overlay patch):
-```yaml
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: tuber-workload-watcher
-  namespace: payments # <-- Must match the newly added namespace
-  labels:
-    app.kubernetes.io/name: tuber
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: tuber-workload-watcher
-subjects:
-  - kind: ServiceAccount
-    name: tuber
-    namespace: tuber-system
-```
-
-> **Tip (Watching Many Namespaces):** If you watch a large or frequently changing list of namespaces in `watchNamespaces` and prefer not to manage one `RoleBinding` per namespace, you can replace the per-namespace `RoleBinding` entries in `deploy/kustomize/base/rbac.yaml` with a single `ClusterRoleBinding` referencing `ClusterRole/tuber-workload-watcher`. `tuber` will still only instantiate informers for the explicit `watchNamespaces` list in `config.yaml`.
+> **Note (Using Overlays vs. Base):** When deploying with `kubectl apply -k deploy/kustomize/overlays/gke` (or `eks`), Kustomize patches `base/configmap.yaml` with `overlays/<cloud>/patch-config.yaml`. Always edit `watchNamespaces` in the overlay's `patch-config.yaml` when deploying an overlay.
+>
+> **Optional Strict Namespace RBAC:** By default, `deploy/kustomize/base/rbac.yaml` binds the read-only `tuber-workload-watcher` `ClusterRole` (`get`, `list`, `watch` on `pods`, `deployments`, `jobs`) via a `ClusterRoleBinding` so you never get `namespaces "<name>" not found` errors from RBAC manifests when adding or removing namespaces. Even with a `ClusterRoleBinding`, `tuber` only starts informers for the explicit `watchNamespaces` list in `config.yaml`. If you prefer strict per-namespace RBAC, you can replace the `ClusterRoleBinding` with individual `RoleBinding` objects in each watched namespace.
 
 ---
 

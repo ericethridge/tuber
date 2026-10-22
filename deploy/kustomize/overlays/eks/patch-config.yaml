@@ -12,7 +12,6 @@ data:
 
     watchNamespaces:
       - default
-      - production
 
     doit:
       baseURL: https://api.doit.com
