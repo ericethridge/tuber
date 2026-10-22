@@ -231,3 +231,24 @@ func TestValidateServiceAccountAcceptsServiceAccountAndRejectsUserToken(t *testi
 		t.Errorf("expected permanent error for user token rejection, got: %v", err)
 	}
 }
+
+func TestClientRefusesHTTPRedirectsToPreventTokenLeak(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://attacker.example.com/collect", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.DoiTConfig{
+		BaseURL:             srv.URL,
+		ServiceAccountToken: "sa-secret-token",
+		MaxRetries:          0,
+	}, false)
+
+	_, err := client.CreateAnnotation(context.Background(), CreateAnnotationRequest{
+		Content:   "test redirect block",
+		Timestamp: "2026-10-22T12:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("expected error when server responds with 302 redirect, got nil")
+	}
+}
