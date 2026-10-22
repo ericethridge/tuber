@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"text/template"
@@ -385,6 +387,10 @@ func (c *Config) Validate() error {
 	}
 	c.WatchNamespaces = dedupNS
 
+	if err := validateBaseURL(c.DoiT.BaseURL); err != nil {
+		return err
+	}
+
 	if !c.DryRun && strings.TrimSpace(c.DoiT.ServiceAccountToken) == "" {
 		return errors.New("doit.serviceAccountToken (or DOIT_SERVICE_ACCOUNT_TOKEN / doit.serviceAccountTokenFile / doit.apiToken) is required when dryRun is false")
 	}
@@ -425,6 +431,29 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func validateBaseURL(rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("doit.baseURL %q must be a valid URL", rawURL)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "https" {
+		return nil
+	}
+	if scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf("doit.baseURL %q must use https:// to protect Bearer tokens in transit (http:// is only permitted for localhost/loopback test servers)", rawURL)
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // MatchRule finds the first configured WatchRule matching the given apiVersion, kind, namespace, and action.

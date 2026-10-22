@@ -36,9 +36,20 @@ func New(cfg config.DoiTConfig) (*Formatter, error) {
 	}, nil
 }
 
+const (
+	// MaxAnnotationContentLength caps the rendered DoiT annotation text length.
+	MaxAnnotationContentLength = 1024
+	// MaxEventSummaryLength caps the workload summary before template execution.
+	MaxEventSummaryLength = 512
+)
+
 // Format renders a WorkloadEvent into a DoiT CreateAnnotationRequest, combining
 // global defaults, rule-level overrides, and per-resource Kubernetes annotation overrides.
 func (f *Formatter) Format(event model.WorkloadEvent) (doit.CreateAnnotationRequest, error) {
+	event.Summary = model.SanitizeText(event.Summary, MaxEventSummaryLength)
+	event.Name = model.SanitizeText(event.Name, 253)
+	event.Namespace = model.SanitizeText(event.Namespace, 63)
+
 	var buf bytes.Buffer
 	if err := f.tmpl.Execute(&buf, event); err != nil {
 		return doit.CreateAnnotationRequest{}, fmt.Errorf("executing annotation template: %w", err)
@@ -55,7 +66,7 @@ func (f *Formatter) Format(event model.WorkloadEvent) (doit.CreateAnnotationRequ
 	labels := model.MergeUniqueStrings(f.defaultLabels, event.RuleLabelIDs, event.LabelIDs)
 
 	return doit.CreateAnnotationRequest{
-		Content:   strings.TrimSpace(buf.String()),
+		Content:   model.SanitizeText(buf.String(), MaxAnnotationContentLength),
 		Timestamp: ts.Format("2006-01-02T15:04:05.000Z"),
 		Reports:   reports,
 		Labels:    labels,

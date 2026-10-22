@@ -13,12 +13,12 @@ import (
 func NewHealthHandler(readyFn func() bool) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		setSecurityHeaders(w)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		setSecurityHeaders(w)
 		if readyFn != nil && readyFn() {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ready\n"))
@@ -28,6 +28,13 @@ func NewHealthHandler(readyFn func() bool) http.Handler {
 		_, _ = w.Write([]byte("not ready: waiting for informer cache sync\n"))
 	})
 	return mux
+}
+
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Cache-Control", "no-store")
 }
 
 // HealthServer runs the HTTP liveness and readiness probe server.
@@ -59,6 +66,10 @@ func (s *HealthServer) Start(ctx context.Context) error {
 	srv := &http.Server{
 		Handler:           NewHealthHandler(s.readyFn),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+		MaxHeaderBytes:    1 << 14, // 16 KiB
 	}
 
 	go func() {
