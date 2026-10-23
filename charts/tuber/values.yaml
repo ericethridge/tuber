@@ -1,0 +1,60 @@
+# Required: cluster identity shown in annotations.
+cluster:
+  name: ""
+  provider: "" # gcp-gke or aws-eks
+  region: ""
+
+# Explicit namespaces, which must already exist. No wildcards.
+watchNamespaces:
+  - default
+
+# Existing Secret in the Helm release namespace. Never put tokens in values.
+credentials:
+  existingSecret: ""
+  tokenKey: service-account-token
+  tenantIdKey: tenant-id # optional Secret key; use "" to omit the env reference
+
+image:
+  repository: ghcr.io/ericethridge/tuber
+  tag: "" # defaults to v<Chart.appVersion>
+  digest: "" # when set, replaces the tag
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+rbac:
+  create: true
+
+dryRun: false
+doit:
+  baseURL: https://api.doit.com
+  validateOnStartup: true
+  rejectUserTokens: true
+  defaultReports: []
+  defaultLabels: []
+  contentTemplate: "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+  rateLimitRPS: 10
+  rateLimitBurst: 20
+  timeout: 15s
+  maxRetries: 3
+rollup:
+  ignoreOwnedPods: true
+  trackOOMKilled: true
+  dedupTTL: 5m
+  resyncPeriod: 0s
+  workers: 2
+# Empty uses tuber's standard Deployment, Job, and Pod rules.
+rules: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+nodeSelector: {}
+tolerations: []

@@ -1,0 +1,8 @@
+cluster:
+  name: my-eks-cluster
+  provider: aws-eks
+  region: us-east-1
+watchNamespaces:
+  - default
+credentials:
+  existingSecret: tuber-doit-credentials
