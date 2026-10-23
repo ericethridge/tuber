@@ -27,7 +27,7 @@ import (
 func main() {
 	var (
 		configPath     = flag.String("config", envOrDefault("TUBER_CONFIG", "/etc/tuber/config.yaml"), "Path to tuber YAML configuration file")
-		kubeconfigPath = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "Path to kubeconfig (leave empty for in-cluster config)")
+		kubeconfigPath = flag.String("kubeconfig", "", "Path to a single kubeconfig file (default: in-cluster credentials, then standard KUBECONFIG loading rules)")
 		dryRunFlag     = flag.Bool("dry-run", false, "Log DoiT annotation payloads without sending HTTP POST requests")
 		healthAddr     = flag.String("health-addr", ":8080", "Address for /healthz and /readyz HTTP probes")
 		leaderElect    = flag.Bool("leader-elect", false, "Enable Kubernetes Lease leader election for HA deployments")
