@@ -3,6 +3,9 @@ bin/
 /tuber
 *.exe
 *.out
+dist/
+gha-creds-*.json
+gha-kubeconfig-*
 
 # Test & coverage artifacts
 *.test

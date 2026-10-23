@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tuber.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tuber.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "tuber.config" . | nindent 4 }}

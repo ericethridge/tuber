@@ -1,0 +1,16 @@
+tuber is configured for {{ .Values.cluster.provider }}/{{ .Values.cluster.name }}.
+Watched namespaces: {{ join ", " .Values.watchNamespaces }}
+
+Check readiness and inspect startup failures:
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "tuber.fullname" . }} --timeout=180s
+  kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "tuber.fullname" . }} --tail=100
+  kubectl -n {{ .Release.Namespace }} get events --sort-by=.lastTimestamp
+
+After cache synchronization, create a standalone Pod in a watched namespace:
+  kubectl -n {{ first .Values.watchNamespaces }} run tuber-smoke --image=nginx:stable --restart=Never
+  kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "tuber.fullname" . }} --since=2m
+  kubectl -n {{ first .Values.watchNamespaces }} delete pod tuber-smoke
+
+{{ if .Values.dryRun }}Dry run is enabled: payloads are logged, not sent to DoiT.{{ else }}Look for a successful annotation log and verify it in DoiT.{{ end }}
+Initial workloads are suppressed. Readiness verifies informer sync, not DoiT delivery.
+The external credentials Secret and watched namespaces are not managed by this chart.
