@@ -16,15 +16,15 @@ import (
 )
 
 const (
-	DefaultDoiTBaseURL        = "https://api.doit.com"
-	DefaultContentTemplate    = "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
-	DefaultRateLimitRPS       = 10.0
-	DefaultRateLimitBurst     = 20
-	DefaultHTTPTimeout        = 15 * time.Second
-	DefaultMaxRetries         = 3
-	DefaultDedupTTL           = 5 * time.Minute
-	DefaultWorkerCount        = 2
-	DefaultShutdownTimeout    = 15 * time.Second
+	DefaultDoiTBaseURL     = "https://api.doit.com"
+	DefaultContentTemplate = "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+	DefaultRateLimitRPS    = 10.0
+	DefaultRateLimitBurst  = 20
+	DefaultHTTPTimeout     = 15 * time.Second
+	DefaultMaxRetries      = 3
+	DefaultDedupTTL        = 5 * time.Minute
+	DefaultWorkerCount     = 2
+	DefaultShutdownTimeout = 15 * time.Second
 )
 
 // Config represents the top-level declarative configuration for tuber.
@@ -37,6 +37,7 @@ type Config struct {
 	DryRun          bool          `yaml:"dryRun"`
 
 	validateOnly bool `yaml:"-"`
+	previewOnly  bool `yaml:"-"`
 }
 
 // ClusterConfig identifies the Kubernetes cluster and cloud environment.
@@ -51,9 +52,9 @@ type ClusterConfig struct {
 // DoiT Service Account API token (created under DoiT Console -> Users and access -> Service Accounts),
 // never a deprecated legacy individual API token.
 type DoiTConfig struct {
-	BaseURL                 string        `yaml:"baseURL"`
-	ServiceAccountToken     string        `yaml:"serviceAccountToken"`
-	ServiceAccountTokenFile string        `yaml:"serviceAccountTokenFile"`
+	BaseURL                 string `yaml:"baseURL"`
+	ServiceAccountToken     string `yaml:"serviceAccountToken"`
+	ServiceAccountTokenFile string `yaml:"serviceAccountTokenFile"`
 	// APIToken and APITokenFile are retained as backward-compatible aliases for ServiceAccountToken / ServiceAccountTokenFile.
 	APIToken          string        `yaml:"apiToken,omitempty"`
 	APITokenFile      string        `yaml:"apiTokenFile,omitempty"`
@@ -115,14 +116,14 @@ func (r RollupConfig) TrackOOMKilledEnabled() bool {
 // In Phase 1 this backs Deployment, Job, and Pod watchers; in Phase 2 the same schema
 // drives dynamic informers for arbitrary GroupVersionResource targets.
 type WatchRule struct {
-	Name          string        `yaml:"name"`
-	APIVersion    string        `yaml:"apiVersion"`
-	Kind          string        `yaml:"kind"`
-	Namespaces    []string      `yaml:"namespaces,omitempty"`
-	LabelSelector string        `yaml:"labelSelector,omitempty"`
+	Name          string         `yaml:"name"`
+	APIVersion    string         `yaml:"apiVersion"`
+	Kind          string         `yaml:"kind"`
+	Namespaces    []string       `yaml:"namespaces,omitempty"`
+	LabelSelector string         `yaml:"labelSelector,omitempty"`
 	Actions       []model.Action `yaml:"actions"`
-	Reports       []string      `yaml:"reports,omitempty"`
-	Labels        []string      `yaml:"labels,omitempty"`
+	Reports       []string       `yaml:"reports,omitempty"`
+	Labels        []string       `yaml:"labels,omitempty"`
 }
 
 // AllowsAction checks if the given action is enabled by this rule.
@@ -209,6 +210,16 @@ func LoadValidation(path string) (*Config, error) {
 	return parseInternal(raw, true)
 }
 
+// LoadPreview applies defaults and environment overrides without reading token files
+// or requiring credentials. It validates configuration, not cluster or API access.
+func LoadPreview(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file %q: %w", path, err)
+	}
+	return parseConfig(raw, true, true)
+}
+
 // Parse unmarshals YAML bytes (unwrapping a Kubernetes ConfigMap if present),
 // applies environment overrides, defaults, and validates the config.
 func Parse(raw []byte) (*Config, error) {
@@ -243,6 +254,10 @@ func unwrapConfigMapIfPresent(raw []byte) ([]byte, error) {
 }
 
 func parseInternal(raw []byte, validateOnly bool) (*Config, error) {
+	return parseConfig(raw, validateOnly, false)
+}
+
+func parseConfig(raw []byte, validateOnly, previewOnly bool) (*Config, error) {
 	unwrapped, err := unwrapConfigMapIfPresent(raw)
 	if err != nil {
 		return nil, err
@@ -250,6 +265,7 @@ func parseInternal(raw []byte, validateOnly bool) (*Config, error) {
 
 	var cfg Config
 	cfg.validateOnly = validateOnly
+	cfg.previewOnly = previewOnly
 	dec := yaml.NewDecoder(bytes.NewReader(unwrapped))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
@@ -327,6 +343,9 @@ func applyEnvOverrides(cfg *Config) {
 }
 
 func loadTokenFromFile(cfg *Config) error {
+	if cfg.previewOnly {
+		return nil
+	}
 	// Normalize ServiceAccountToken <-> APIToken aliases.
 	if strings.TrimSpace(cfg.DoiT.ServiceAccountToken) == "" && strings.TrimSpace(cfg.DoiT.APIToken) != "" {
 		cfg.DoiT.ServiceAccountToken = cfg.DoiT.APIToken
@@ -444,7 +463,7 @@ func (c *Config) Validate() error {
 
 	hasToken := strings.TrimSpace(c.DoiT.ServiceAccountToken) != ""
 	hasTokenFileRef := c.validateOnly && strings.TrimSpace(c.DoiT.ServiceAccountTokenFile) != ""
-	if !c.DryRun && !hasToken && !hasTokenFileRef {
+	if !c.previewOnly && !c.DryRun && !hasToken && !hasTokenFileRef {
 		return errors.New("doit.serviceAccountToken (or DOIT_SERVICE_ACCOUNT_TOKEN / doit.serviceAccountTokenFile / doit.apiToken) is required when dryRun is false")
 	}
 

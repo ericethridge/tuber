@@ -15,6 +15,9 @@ coverage.out
 .DS_Store
 
 # Local secrets or kubeconfigs
+.env
+.env.*
+!.env.example
 *.kubeconfig
 *.secret.yaml
 !deploy/kustomize/base/secret.example.yaml
