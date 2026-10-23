@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tuber.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "tuber.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tuber
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include "tuber.config" . | sha256sum }}
+      labels:
+        app.kubernetes.io/name: tuber
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    spec:
+      serviceAccountName: {{ include "tuber.serviceAccountName" . }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tuber
+          image: {{ include "tuber.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/etc/tuber/config.yaml
+            - --health-addr=:8080
+            - --leader-elect=true
+            - --leader-elect-namespace={{ .Release.Namespace }}
+            - --leader-elect-id={{ include "tuber.fullname" . }}-leader
+          {{- if .Values.credentials.tenantIdKey }}
+          env:
+            - name: DOIT_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.credentials.existingSecret }}
+                  key: {{ .Values.credentials.tenantIdKey }}
+                  optional: true
+          {{- end }}
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tuber
+              readOnly: true
+            - name: credentials
+              mountPath: /var/run/secrets/doit
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "tuber.fullname" . }}-config
+        - name: credentials
+          secret:
+            secretName: {{ .Values.credentials.existingSecret }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.credentials.tokenKey }}
+                path: service-account-token
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
