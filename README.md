@@ -6,6 +6,50 @@
 
 `tuber` is a lightweight, in-cluster Kubernetes monitoring agent written in Go (`client-go`) for **Google Kubernetes Engine (GKE)** and **Amazon EKS** clusters. It watches workload lifecycle changes across an explicit allowlist of namespaces, applies **smart workload rollup** so replica pod churn does not flood your cost charts, and automatically creates contextual annotations in **DoiT Cloud Intelligence** via the [DoiT Annotations API](https://developer.doit.com/docs/annotations-api) (`POST https://api.doit.com/analytics/v1/annotations`).
 
+## Start here
+
+Build with the Go version specified in [go.mod](go.mod):
+
+```bash
+go build -o bin/tuber ./cmd/tuber
+```
+
+Choose your provider's configuration, then edit its cluster name, region, and
+namespace allowlist:
+
+| Provider | Configuration |
+| :--- | :--- |
+| GKE | [GKE configuration](deploy/kustomize/overlays/gke/patch-config.yaml) |
+| EKS | [EKS configuration](deploy/kustomize/overlays/eks/patch-config.yaml) |
+
+Inspect the effective settings and sample annotation text locally. This command
+needs no credentials or cluster access:
+
+```bash
+./bin/tuber --config=deploy/kustomize/overlays/gke/patch-config.yaml --preview-config
+```
+
+For EKS, substitute the EKS configuration path. With a working kubeconfig, start
+a dry run against the same configuration:
+
+```bash
+./bin/tuber \
+  --config=deploy/kustomize/overlays/gke/patch-config.yaml \
+  --kubeconfig="$HOME/.kube/config" \
+  --dry-run
+```
+
+Wait for `all namespace informer caches synced`, then create or change a workload
+in a watched namespace to see a dry-run payload. Existing workloads are suppressed
+on startup. Dry runs watch the cluster but do not send annotations to DoiT.
+If a token file is configured, a missing file is allowed in dry-run mode; an
+existing file must still be readable.
+
+Next, [create the credentials Secret and deploy](#deploying-to-gke-gcp-and-eks-aws).
+For details, see [configuration](#customizing--expanding-the-configmap),
+[command modes](#local-build-validation--dry-run-testing), and
+[troubleshooting](#troubleshooting).
+
 ---
 
 ## Key Features
@@ -48,6 +92,28 @@ Per [DoiT Getting Started — API Tokens](https://developer.doit.com/docs/start)
 ---
 
 ## Local Build, Validation & Dry-Run Testing
+
+| Mode | Purpose | Access needed |
+| :--- | :--- | :--- |
+| `--preview-config` | Print selected effective settings and synthetic sample text as YAML, then exit | Configuration file only; skips token files and requires no credentials |
+| `--validate-only` | Validate configuration, then exit | Configuration file; token or token-file reference required unless dry-run is enabled; existing token files must be readable |
+| `--dry-run` | Watch live workload changes and log payloads | Kubernetes access; no DoiT API calls |
+| Normal run | Watch changes and send annotations | Kubernetes access and DoiT credentials |
+
+Preview and validation apply environment overrides and defaults. Preview takes
+precedence if both offline flags are supplied. Neither offline mode checks live
+RBAC, namespace existence, token validity, or report permissions. Preview samples
+demonstrate template formatting only: selectors, routing, and workload overrides
+are not simulated. Rules appear in their configured first-match order.
+
+Preview excludes tokens, token paths, tenant ID, and API URL. It includes cluster
+names, report/label IDs, selectors, and rendered annotation text; review those
+values before sharing output. Structured JSON logs go to stderr; preview YAML
+goes to stdout, so it can be saved directly:
+
+```bash
+./bin/tuber --config=deploy/kustomize/overlays/gke/patch-config.yaml --preview-config > preview.yaml
+```
 
 ```bash
 # Run all unit and end-to-end fake-cluster tests with race detector
@@ -231,7 +297,9 @@ You can expand the `rules:` array in `config.yaml` to filter by `namespaces`, Ku
 
 ### 5. Environment Variable Overrides
 
-Any setting in `config.yaml` can be overridden via environment variables on the `tuber` container:
+The following settings support environment overrides on the `tuber` container.
+Other settings, including routing rules and templates, are configured in YAML.
+The binary does not automatically load `.env` files:
 
 | Environment Variable | Overrides `config.yaml` Field | Description |
 | :--- | :--- | :--- |
@@ -264,6 +332,32 @@ kubectl apply -k deploy/kustomize/overlays/gke
 kubectl -n tuber-system rollout restart deployment/tuber
 kubectl -n tuber-system rollout status deployment/tuber
 ```
+
+---
+
+## Troubleshooting
+
+Start with `--preview-config` to inspect namespaces, ordered rules, rollup settings,
+and sample text. For a deployed agent, inspect its logs and rollout:
+
+```bash
+kubectl -n tuber-system logs deployment/tuber --tail=100
+kubectl -n tuber-system rollout status deployment/tuber
+```
+
+| Symptom | Check and next step |
+| :--- | :--- |
+| Configuration validation fails | Follow the field named in the error. Check indentation, spelling, and environment overrides. Pass a plain config or a single ConfigMap/patch file containing `data.config.yaml`. |
+| Kubernetes client configuration fails | Set `--kubeconfig` to a readable file for local runs. In-cluster, check the pod ServiceAccount and its mounted credentials. |
+| Readiness stays unavailable | Look for informer errors. Confirm every watched namespace exists and the ServiceAccount can `list` and `watch` Pods, Deployments, and Jobs in each namespace. With leader election enabled, standby replicas have no running informers and remain unready. |
+| Token file cannot be read | Check the Secret key, volume mount, and file permissions. Offline preview skips credential files; a successful preview does not verify the mount. |
+| DoiT startup validation fails or returns 401/403 | Check the service account token, tenant ID, API reachability, and Cloud Analytics permissions. For report-specific 403 errors, verify report sharing as described in the authentication section. |
+| Dry run produces no payloads | Wait for cache sync, then make a new workload change. Check the namespace allowlist, first matching rule, selectors, and `tuber.doit.com/ignore`. Routine owned-Pod churn and initial workloads are suppressed; repeated events may be deduplicated. |
+| ConfigMap edits have no effect | Apply the overlay and restart the Deployment using the update steps above. Check environment overrides if values still differ. |
+
+`/healthz` reports whether the health HTTP server is alive. `/readyz` reports
+informer cache synchronization; it does not verify DoiT delivery. For a local run,
+the endpoints listen on port 8080 by default (override with `--health-addr`).
 
 ---
 

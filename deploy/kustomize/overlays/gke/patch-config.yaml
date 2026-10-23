@@ -12,6 +12,8 @@ data:
 
     watchNamespaces:
       - default
+      - my-app-namespace
+      - payments
 
     doit:
       baseURL: https://api.doit.com
@@ -23,7 +25,7 @@ data:
       rateLimitBurst: 20
       timeout: 15s
       maxRetries: 3
-      defaultReports: []
+      defaultReports: ["EXAMPLE_REPORT_ID"]
       defaultLabels: []
 
     rollup:
