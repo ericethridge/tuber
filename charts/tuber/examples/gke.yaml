@@ -1,0 +1,8 @@
+cluster:
+  name: my-gke-cluster
+  provider: gcp-gke
+  region: us-central1
+watchNamespaces:
+  - default
+credentials:
+  existingSecret: tuber-doit-credentials

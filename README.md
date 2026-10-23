@@ -8,6 +8,16 @@
 
 ## Start here
 
+For the simplest installation, use the [Helm chart guide](charts/tuber/README.md).
+It takes a small values file and an existing DoiT credentials Secret, and manages
+the Deployment, configuration, ServiceAccount, and namespace-scoped RBAC. The
+guide covers GKE/EKS, upgrades, uninstall, and migration from Kustomize. Public
+OCI installation becomes available after the first chart/image release; until
+then, the guide includes local chart installation with a published image override.
+
+The following source-build and Kustomize instructions remain available for local
+development and existing installations.
+
 Run the commands below from the repository root. You need the Go version specified
 in [go.mod](go.mod) to build; live runs also need a working Kubernetes context with
 permission to list and watch Pods, Deployments, and Jobs in the watched namespaces.
