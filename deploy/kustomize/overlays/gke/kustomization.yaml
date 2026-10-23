@@ -7,3 +7,8 @@ resources:
 patches:
   - path: patch-config.yaml
   - path: patch-serviceaccount.yaml
+
+images:
+  - name: ghcr.io/ericethridge/tuber
+    newName: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/tuber/tuber
+    newTag: v1
