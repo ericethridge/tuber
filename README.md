@@ -8,7 +8,10 @@
 
 ## Start here
 
-Build with the Go version specified in [go.mod](go.mod):
+Run the commands below from the repository root. You need the Go version specified
+in [go.mod](go.mod) to build; live runs also need a working Kubernetes context with
+permission to list and watch Pods, Deployments, and Jobs in the watched namespaces.
+Build or rebuild the binary after pulling source changes:
 
 ```bash
 go build -o bin/tuber ./cmd/tuber
@@ -29,15 +32,20 @@ needs no credentials or cluster access:
 ./bin/tuber --config=deploy/kustomize/overlays/gke/patch-config.yaml --preview-config
 ```
 
-For EKS, substitute the EKS configuration path. With a working kubeconfig, start
-a dry run against the same configuration:
+For EKS, substitute the EKS configuration path. Confirm your Kubernetes context,
+then start a dry run against the same configuration:
 
 ```bash
+kubectl config current-context
 ./bin/tuber \
   --config=deploy/kustomize/overlays/gke/patch-config.yaml \
-  --kubeconfig="$HOME/.kube/config" \
   --dry-run
 ```
+
+Local runs use the standard kubeconfig loading rules (`KUBECONFIG`, otherwise
+`$HOME/.kube/config`). To select a single file explicitly, add
+`--kubeconfig=/path/to/your/existing/kubeconfig`. In-cluster runs use the pod's
+Kubernetes credentials first. See [troubleshooting](#troubleshooting) if loading fails.
 
 Wait for `all namespace informer caches synced`, then create or change a workload
 in a watched namespace to see a dry-run payload. Existing workloads are suppressed
@@ -57,14 +65,14 @@ For details, see [configuration](#customizing--expanding-the-configmap),
 1. **Smart Workload Rollup (Noise Control)**:
    - **Deployments (`apps/v1`)**: Emits annotations on `Created`, `Scaled` (`spec.replicas` changes), `RolledOut` (container image or resource request/limit updates), and `Deleted`. Ignores routine replica status heartbeats.
    - **Jobs (`batch/v1`)**: Emits annotations on `Created`, `Completed` (`Complete=True`), and `Failed` (`Failed=True`).
-   - **Pods (`core/v1`)**: Suppresses routine `Created`/`Deleted` churn for Pods owned by a `ReplicaSet` or `Job` (`ignoreOwnedPods: true`), while capturing **standalone Pods** (`Created`, `Deleted`) and **`OOMKilled` container terminations** across all watched Pods.
+   - **Pods (`v1`)**: Suppresses routine `Created`/`Deleted` churn for any Pod with owner references (`ignoreOwnedPods: true`), while capturing **standalone Pods** (`Created`, `Deleted`) and **`OOMKilled` container terminations** across all watched Pods.
 2. **Cold-Start Suppression**:
    - Uses `client-go` `ResourceEventHandlerDetailedFuncs` (`isInInitialList`) so restarting or rolling out `tuber` itself never re-emits annotations for workloads already running in the cluster.
 3. **Explicit Namespace Allowlist**:
    - Instantiates namespace-scoped `SharedInformer` factories strictly for the namespaces listed in `watchNamespaces` (wildcard `*` or empty lists are rejected at validation time).
 4. **DoiT Annotations API Integration**:
    - Authenticates via `Authorization: Bearer <API_TOKEN>` and optional `X-Tenant-Id: <TENANT_ID>`.
-   - Client-side token-bucket rate limiter (`golang.org/x/time/rate`) and exponential backoff on HTTP `429`/`5xx` to stay comfortably within DoiT's 1,000 req/min limit.
+   - Client-side token-bucket rate limiter (`golang.org/x/time/rate`, default 10 requests/second with a burst of 20) and exponential backoff on HTTP `429`/`5xx`. These limits apply per process.
 5. **Per-Workload Kubernetes Annotation Overrides**:
    - `tuber.doit.com/ignore: "true"` — Skip this workload completely.
    - `tuber.doit.com/watch: "true"` — Force watching an owned Pod's `Created`/`Deleted` lifecycle even when `ignoreOwnedPods: true`.
@@ -125,12 +133,32 @@ go build -o bin/tuber ./cmd/tuber
 # Validate a configuration file without connecting to a cluster
 ./bin/tuber --config=deploy/kustomize/base/configmap.yaml --validate-only
 
-# Run locally against your current kubeconfig in dry-run mode (logs DoiT payloads without POSTing)
+# Run locally using a configuration shipped in this repo and your current kubeconfig
 ./bin/tuber \
-  --config=./my-config.yaml \
-  --kubeconfig=$HOME/.kube/config \
+  --config=deploy/kustomize/overlays/gke/patch-config.yaml \
   --dry-run
 ```
+
+To maintain a separate local configuration, first copy a shipped ConfigMap:
+
+```bash
+cp deploy/kustomize/overlays/gke/patch-config.yaml /tmp/tuber-config.yaml
+./bin/tuber --config=/tmp/tuber-config.yaml --preview-config
+```
+
+The CLI accepts either plain tuber YAML or a single ConfigMap manifest containing
+`data.config.yaml`. A patch file contains a complete configuration in that entry;
+the CLI does not merge it with the base configuration. Do not pass a multi-resource
+`kubectl kustomize` output as `--config`.
+
+Run `./bin/tuber --help` for all flags. Other runtime flags are:
+
+| Flag | Default | Purpose |
+| :--- | :--- | :--- |
+| `--health-addr` | `:8080` | Listen address for health/readiness probes; use `--health-addr=""` to disable them locally |
+| `--leader-elect` | `false` in the CLI; `true` in the Deployment | Use a Kubernetes Lease to select one active watcher |
+| `--leader-elect-namespace` | `POD_NAMESPACE`, otherwise `tuber-system` | Namespace containing the Lease |
+| `--leader-elect-id` | `tuber-leader-lock` | Lease resource name |
 
 ---
 
@@ -146,6 +174,11 @@ kubectl -n tuber-system create secret generic tuber-doit-credentials \
   --from-literal=tenant-id=""
 ```
 
+If `tuber-system` already exists, skip namespace creation. Replace the token
+placeholder before running the Secret command. If using the example Secret
+manifest, edit it first and apply it with `kubectl apply -f`; it is not included
+automatically by the overlay.
+
 ### 2. Customize the `ConfigMap` Before Deploying
 
 Choose the overlay file matching your cloud provider (or edit `deploy/kustomize/base/configmap.yaml` for shared defaults):
@@ -159,7 +192,44 @@ Validate your changes locally before applying:
 ./bin/tuber --config=deploy/kustomize/overlays/eks/patch-config.yaml --validate-only
 ```
 
-### 3. Deploy the GKE or EKS Overlay
+### 3. Build and Select a Container Image
+
+The Deployment currently references `ghcr.io/ericethridge/tuber:latest`. Before applying
+an overlay, build and push this source to a registry your cluster can pull from,
+then set an `images` entry in your chosen overlay's `kustomization.yaml`. Replace
+`YOUR_REGISTRY/tuber` with your registry repository:
+
+```bash
+docker build --platform=linux/amd64 -t YOUR_REGISTRY/tuber:v1 .
+docker push YOUR_REGISTRY/tuber:v1
+```
+
+Add the following alongside `resources` and `patches` in the overlay:
+
+```yaml
+images:
+  - name: ghcr.io/ericethridge/tuber
+    newName: YOUR_REGISTRY/tuber
+    newTag: v1
+```
+
+The example targets Linux amd64 worker nodes. For arm64 workers, use
+`--platform=linux/arm64` instead; the Dockerfile compiles for the selected platform.
+For a new release, choose a new image tag and update the overlay to match.
+
+Review `patch-serviceaccount.yaml` too: the checked-in GKE service account and EKS
+role ARN are environment-specific. Configure them for your environment or remove
+the cloud IAM annotation if you do not use it. Kubernetes workload watches use
+the RBAC in `base/rbac.yaml`; DoiT uses the mounted API token.
+
+### 4. Deploy the GKE or EKS Overlay
+
+Choose **one** overlay for your target cluster. Inspect its rendered resources
+before applying them (the render step is local):
+
+```bash
+kubectl kustomize deploy/kustomize/overlays/gke
+```
 
 ```bash
 # Deploy on Google Kubernetes Engine (GKE)
@@ -177,7 +247,7 @@ The `tuber-config` `ConfigMap` mounts `config.yaml` into the pod at `/etc/tuber/
 
 ### 1. Adding Watched Namespaces (`watchNamespaces`)
 
-`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). Out of the box, only the `default` namespace (which exists in every Kubernetes cluster) is watched.
+`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). The base and EKS configurations watch `default`. The checked-in GKE overlay also watches `my-app-namespace` and `payments` and sets an environment-specific default report ID. Review these values before use; each namespace must exist in your target cluster.
 
 To watch additional namespaces in your cluster, add them to `watchNamespaces` in your overlay `ConfigMap` (`deploy/kustomize/overlays/gke/patch-config.yaml` or `deploy/kustomize/overlays/eks/patch-config.yaml`, or `deploy/kustomize/base/configmap.yaml` if applying `base/`):
 
@@ -190,7 +260,7 @@ To watch additional namespaces in your cluster, add them to `watchNamespaces` in
 
 > **Note (Using Overlays vs. Base):** When deploying with `kubectl apply -k deploy/kustomize/overlays/gke` (or `eks`), Kustomize patches `base/configmap.yaml` with `overlays/<cloud>/patch-config.yaml`. Always edit `watchNamespaces` in the overlay's `patch-config.yaml` when deploying an overlay.
 >
-> **Optional Strict Namespace RBAC:** By default, `deploy/kustomize/base/rbac.yaml` binds the read-only `tuber-workload-watcher` `ClusterRole` (`get`, `list`, `watch` on `pods`, `deployments`, `jobs`) via a `ClusterRoleBinding` so you never get `namespaces "<name>" not found` errors from RBAC manifests when adding or removing namespaces. Even with a `ClusterRoleBinding`, `tuber` only starts informers for the explicit `watchNamespaces` list in `config.yaml`. If you prefer strict per-namespace RBAC, you can replace the `ClusterRoleBinding` with individual `RoleBinding` objects in each watched namespace.
+> **Optional Strict Namespace RBAC:** By default, `deploy/kustomize/base/rbac.yaml` binds the read-only `tuber-workload-watcher` `ClusterRole` (`get`, `list`, `watch` on `pods`, `deployments`, `jobs`) via a `ClusterRoleBinding`. Watched namespaces must still exist. Even with a `ClusterRoleBinding`, `tuber` only starts informers for the explicit `watchNamespaces` list in `config.yaml`. If you prefer strict per-namespace RBAC, replace the workload `ClusterRoleBinding` with individual `RoleBinding` objects in each watched namespace. Preserve the separate leader-election Role and RoleBinding in `tuber-system`.
 
 ---
 
@@ -214,12 +284,17 @@ You can attach annotations globally to specific DoiT Cloud Analytics reports and
 ```
 
 When an event occurs, `tuber` merges `defaultReports` + matched `rule.reports` + workload annotation `tuber.doit.com/reports` (deduplicated, up to 20 IDs).
+Labels use the same merge order and limit. IDs must contain 1–64 ASCII letters,
+digits, hyphens, or underscores; invalid IDs are omitted from the payload.
 
 ---
 
 ### 3. Customizing Annotation Text (`doit.contentTemplate`)
 
 `doit.contentTemplate` uses Go's `text/template` syntax and is validated at startup.
+Rendered annotation text is limited to 1,024 characters; event summaries are
+limited to 512 characters before rendering. Control characters are removed and
+line breaks are converted to spaces.
 
 **Default template:**
 ```yaml
@@ -244,6 +319,12 @@ contentTemplate: "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}
 ### 4. Expanding Rules for Multi-Team / Multi-Namespace Routing
 
 You can expand the `rules:` array in `config.yaml` to filter by `namespaces`, Kubernetes `labelSelector`, and `actions`, and route matching events to team-specific DoiT reports and labels. (`tuber` evaluates `rules` in order and uses the first matching rule for a given `(apiVersion, kind, namespace, action, labels)`):
+
+Every rule namespace must also appear in `watchNamespaces`. Empty `namespaces`
+matches all watched namespaces; empty `actions` matches every action supported by
+that resource's watcher. An omitted or empty `rules` list installs the three
+default rules. An invalid label selector never matches an event; offline
+validation currently does not reject it.
 
 ```yaml
     rules:
@@ -315,6 +396,13 @@ The binary does not automatically load `.env` files:
 | `DOIT_VALIDATE_ON_STARTUP` | `doit.validateOnStartup` | Set `true` or `false` to toggle `/auth/v1/validate` startup check |
 | `TUBER_DRY_RUN` | `dryRun` | Set `true` to log annotation payloads without sending HTTP POSTs |
 
+An explicit `--config` overrides `TUBER_CONFIG`; `--dry-run` forces dry-run mode
+even if `TUBER_DRY_RUN=false`. The boolean environment overrides also accept
+`1`/`yes` and `0`/`no` (case insensitive). Unrecognized values are ignored.
+`DOIT_API_TOKEN` and `DOIT_API_TOKEN_FILE` remain legacy aliases; prefer the
+`DOIT_SERVICE_ACCOUNT_*` names. A non-empty inline token takes precedence over a
+token file.
+
 ---
 
 ### 6. Applying `ConfigMap` Updates to a Running Cluster
@@ -349,6 +437,8 @@ kubectl -n tuber-system rollout status deployment/tuber
 | :--- | :--- |
 | Configuration validation fails | Follow the field named in the error. Check indentation, spelling, and environment overrides. Pass a plain config or a single ConfigMap/patch file containing `data.config.yaml`. |
 | Kubernetes client configuration fails | Set `--kubeconfig` to a readable file for local runs. In-cluster, check the pod ServiceAccount and its mounted credentials. |
+| Config file cannot be found | Run from the repository root and use a shipped `--config` path. A custom file must be created before it can be loaded. |
+| Flag provided but not defined | Rebuild with `go build -o bin/tuber ./cmd/tuber`; the local binary may predate the README's flags. |
 | Readiness stays unavailable | Look for informer errors. Confirm every watched namespace exists and the ServiceAccount can `list` and `watch` Pods, Deployments, and Jobs in each namespace. With leader election enabled, standby replicas have no running informers and remain unready. |
 | Token file cannot be read | Check the Secret key, volume mount, and file permissions. Offline preview skips credential files; a successful preview does not verify the mount. |
 | DoiT startup validation fails or returns 401/403 | Check the service account token, tenant ID, API reachability, and Cloud Analytics permissions. For report-specific 403 errors, verify report sharing as described in the authentication section. |
@@ -362,6 +452,10 @@ the endpoints listen on port 8080 by default (override with `--health-addr`).
 ---
 
 ## Expanding to Arbitrary Kubernetes Primitives (Phase 2 Rule Engine)
+
+Current watchers support only `apps/v1` Deployments, `batch/v1` Jobs, and `v1`
+Pods. Adding another kind to `rules` does not create a watcher for that kind.
+The following describes future implementation work.
 
 The `rules:` list in `config.yaml` is already structured around `(apiVersion, kind, namespaces, labelSelector, actions, reports, labels)`:
 

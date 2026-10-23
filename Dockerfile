@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.24-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /workspace
 
 COPY go.mod go.sum ./
@@ -9,7 +11,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/tuber ./cmd/tuber
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/tuber ./cmd/tuber
 
 FROM gcr.io/distroless/static-debian12:nonroot
 WORKDIR /
