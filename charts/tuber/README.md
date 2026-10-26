@@ -89,9 +89,10 @@ helm upgrade --install tuber ./charts/tuber \
   --set image.tag=v1 --wait --timeout 3m
 ```
 
-That override is the existing development image for this repository; other users
-must substitute their own published image. Private images require appropriate
-node access or `imagePullSecrets`. Keep overrides in your values file for future
+That override is a sample image path; substitute your own published image. It
+is only needed until the first release is published; after that, drop it and use
+the release image. Private images require appropriate node access or
+`imagePullSecrets`. Keep overrides in your values file for future
 upgrades. If tuber is already installed with Kustomize, use the migration steps
 below before installing Helm resources with conflicting names.
 

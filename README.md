@@ -2,7 +2,7 @@
   <img src="docs/assets/tuber-banner.png" alt="tuber — Kubernetes Monitoring Integration for DoiT Cloud Intelligence Annotations (For GKE and EKS)" width="100%" />
 </p>
 
-# `tuber` — Kubernetes Workload Monitor for DoiT Cloud Analytics Annotations
+# `tuber` — Kubernetes Workload Monitor for DoiT Cloud Intelligence Annotations
 
 `tuber` is a lightweight, in-cluster Kubernetes monitoring agent written in Go (`client-go`) for **Google Kubernetes Engine (GKE)** and **Amazon EKS** clusters. It watches workload lifecycle changes across an explicit allowlist of namespaces, applies **smart workload rollup** so replica pod churn does not flood your cost charts, and automatically creates contextual annotations in **DoiT Cloud Intelligence** via the [DoiT Annotations API](https://developer.doit.com/docs/annotations-api) (`POST https://api.doit.com/analytics/v1/annotations`).
 
@@ -16,7 +16,11 @@ OCI installation becomes available after the first chart/image release; until
 then, the guide includes local chart installation with a published image override.
 
 The following source-build and Kustomize instructions remain available for local
-development and existing installations.
+development and existing installations. Kustomize is the legacy install path:
+Helm and Kustomize installs share the `tuber-system` namespace and credentials
+Secret, so do not run both against the same cluster. To move an existing
+Kustomize installation to Helm, follow the
+[migration steps](charts/tuber/README.md#migrate-an-existing-kustomize-installation).
 
 Run the commands below from the repository root. You need the Go version specified
 in [go.mod](go.mod) to build; live runs also need a working Kubernetes context with
@@ -257,7 +261,7 @@ The `tuber-config` `ConfigMap` mounts `config.yaml` into the pod at `/etc/tuber/
 
 ### 1. Adding Watched Namespaces (`watchNamespaces`)
 
-`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). The base and EKS configurations watch `default`. The checked-in GKE overlay also watches `my-app-namespace` and `payments` and sets an environment-specific default report ID. Review these values before use; each namespace must exist in your target cluster.
+`tuber` enforces an explicit `watchNamespaces` allowlist (wildcards like `*` or `all` are rejected). The base and EKS configurations watch `default`. The checked-in GKE overlay also watches `default` and ships sample values (cluster name, image registry, GCP service account, empty default reports). Replace them before use; each namespace must exist in your target cluster.
 
 To watch additional namespaces in your cluster, add them to `watchNamespaces` in your overlay `ConfigMap` (`deploy/kustomize/overlays/gke/patch-config.yaml` or `deploy/kustomize/overlays/eks/patch-config.yaml`, or `deploy/kustomize/base/configmap.yaml` if applying `base/`):
 
@@ -488,4 +492,4 @@ rules:
       - utHqK0OmwbPy1au3Xy22
 ```
 
-To expand from typed `Deployment`/`Job`/`Pod` informers to arbitrary Kubernetes resources (e.g., `StatefulSet`, `DaemonSet`, `HorizontalPodAutoscaler`, `Ingress`, or CRDs), add a `dynamicinformer.DynamicSharedInformerFactory` in `internal/watcher/manager.go` that maps each `WatchRule`'s `apiVersion` + `kind` via RESTMapper to a `schema.GroupVersionResource` and feeds `unstructured.Unstructured` events into the same `Evaluator` $\rightarrow$ `Deduplicator` $\rightarrow$ `Formatter` $\rightarrow$ `DoiT Sink` pipeline.
+To expand from typed `Deployment`/`Job`/`Pod` informers to arbitrary Kubernetes resources (e.g., `StatefulSet`, `DaemonSet`, `HorizontalPodAutoscaler`, `Ingress`, or CRDs), add a `dynamicinformer.DynamicSharedInformerFactory` in `internal/watcher/manager.go` that maps each `WatchRule`'s `apiVersion` + `kind` via RESTMapper to a `schema.GroupVersionResource` and feeds `unstructured.Unstructured` events into the same `Evaluator` -> `Deduplicator` -> `Formatter` -> `DoiT Sink` pipeline.

@@ -6,14 +6,12 @@ metadata:
 data:
   config.yaml: |
     cluster:
-      name: gke-prod-us-central1
+      name: my-gke-cluster
       provider: gcp-gke
       region: us-central1
 
     watchNamespaces:
       - default
-      - my-app-namespace
-      - payments
 
     doit:
       baseURL: https://api.doit.com
@@ -25,7 +23,7 @@ data:
       rateLimitBurst: 20
       timeout: 15s
       maxRetries: 3
-      defaultReports: ["EXAMPLE_REPORT_ID"]
+      defaultReports: []
       defaultLabels: []
 
     rollup:
