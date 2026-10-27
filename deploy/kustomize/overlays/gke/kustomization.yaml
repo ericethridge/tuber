@@ -10,5 +10,5 @@ patches:
 
 images:
   - name: ghcr.io/ericethridge/tuber
-    newName: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/tuber/tuber
-    newTag: v1
+    newName: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/tuber/tuber  # sample: replace with your registry
+    newTag: v0.1.0
