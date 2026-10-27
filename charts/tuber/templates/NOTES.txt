@@ -5,6 +5,7 @@ Check readiness and inspect startup failures:
   kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "tuber.fullname" . }} --timeout=180s
   kubectl -n {{ .Release.Namespace }} logs deployment/{{ include "tuber.fullname" . }} --tail=100
   kubectl -n {{ .Release.Namespace }} get events --sort-by=.lastTimestamp
+If the pod stays in ContainerCreating with FailedMount, check that Secret {{ .Values.credentials.existingSecret }} exists in {{ .Release.Namespace }} and has key {{ .Values.credentials.tokenKey }}.
 
 After cache synchronization, create a standalone Pod in a watched namespace:
   kubectl -n {{ first .Values.watchNamespaces }} run tuber-smoke --image=nginx:stable --restart=Never

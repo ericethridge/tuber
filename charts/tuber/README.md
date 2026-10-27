@@ -115,8 +115,8 @@ kubectl -n default delete pod tuber-smoke
 
 Look for successful annotation creation in logs and verify the annotation in
 DoiT. Initial workloads are suppressed. Set `dryRun: true` in your values file
-to log payloads without calling DoiT; the chart still requires a Secret with the
-token key. Dry-run logs demonstrate formatting but not delivery.
+to log payloads without calling DoiT; the Secret name is still required, but
+the pod starts even if the Secret does not exist yet. Dry-run logs demonstrate formatting but not delivery.
 
 For failures, inspect the actual events and pod state:
 
@@ -143,7 +143,7 @@ these defaults. Unknown values are rejected by the schema to catch misspellings.
 | :--- | :--- |
 | `cluster.name`, `cluster.provider` | Required annotation identity; provider is `gcp-gke` or `aws-eks` |
 | `cluster.region` | Optional region metadata |
-| `watchNamespaces` | Unique, explicit allowlist; defaults to `default`; chart creates read-only Roles and RoleBindings there |
+| `watchNamespaces` | Unique, explicit allowlist; defaults to `default`; chart creates read-only Roles and RoleBindings there for Pods, Deployments, and Jobs. This access is fixed because tuber always watches all three, whatever `rules` select |
 | `credentials.existingSecret` | Required Secret in the release namespace; remains external to Helm |
 | `credentials.tokenKey` | Existing Secret key; defaults to `service-account-token` |
 | `credentials.tenantIdKey` | Optional tenant Secret key; defaults to `tenant-id`; empty omits the environment reference |
@@ -156,7 +156,7 @@ these defaults. Unknown values are rejected by the schema to catch misspellings.
 | `serviceAccount.create`, `serviceAccount.name` | Create a dedicated ServiceAccount, or select an existing one |
 | `serviceAccount.annotations` | Optional annotations for environments needing additional cloud integration |
 | `rbac.create` | Defaults true; if false, administrator must provision workload and Lease access |
-| `resources` | CPU/memory requests and limits; defaults to 100m/128Mi for each |
+| `resources` | CPU/memory requests and limits; defaults to requests 100m/128Mi and limits 500m/256Mi. Raise memory for namespaces with thousands of Pods |
 | `nodeSelector`, `tolerations` | Optional scheduling requirements |
 
 The chart runs one replica with leader election and a `Recreate` strategy. A
@@ -238,6 +238,10 @@ back to one replica to restore the previous installation.
 5. On the first publication, use each GHCR package's settings to make both the
    container package and chart package **public**. Workflow credentials need
    package write access; organization policy must allow public packages.
+   A published version tag is immutable: the workflow refuses to overwrite an
+   existing image tag, so if a later step fails, publish a new version instead of
+   re-running. The workflow also requires `values.yaml` `image.repository` to equal
+   `ghcr.io/<owner>/<repo>`.
 6. A separate job verifies anonymous chart access and both image platforms. If
    this fails because new packages were private, make them public and rerun the
    failed verification job before announcing the release.
