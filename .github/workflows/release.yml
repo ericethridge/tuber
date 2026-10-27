@@ -45,6 +45,11 @@ jobs:
           test "$VERSION" = "$CHART_VERSION"
           test "$VERSION" = "$APP_VERSION"
           git merge-base --is-ancestor HEAD origin/main
+          CHART_IMAGE="$(awk '/^image:/ {i=1; next} i && /^  repository:/ {print $2; exit}' charts/tuber/values.yaml)"
+          test "$CHART_IMAGE" = "ghcr.io/${GITHUB_REPOSITORY,,}" || {
+            echo "values.yaml image.repository ($CHART_IMAGE) must equal ghcr.io/${GITHUB_REPOSITORY,,}" >&2
+            exit 1
+          }
           printf 'version=%s\nimage=%s\nchart=%s\n' \
             "$VERSION" "ghcr.io/${GITHUB_REPOSITORY,,}" \
             "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts/tuber" >> "$GITHUB_OUTPUT"
@@ -60,6 +65,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Package chart and refuse to overwrite a published image tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_REF: ${{ steps.release.outputs.image }}:v${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm package charts/tuber --destination dist
+          if docker buildx imagetools inspect "$IMAGE_REF" >/dev/null 2>&1; then
+            echo "$IMAGE_REF already exists; published tags are immutable. Use a new version." >&2
+            exit 1
+          fi
       - name: Publish versioned amd64 and arm64 images
         uses: docker/build-push-action@v7
         with:
@@ -72,12 +89,8 @@ jobs:
             org.opencontainers.image.version=${{ steps.release.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
       - name: Publish OCI chart
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          helm package charts/tuber --destination dist
           helm push dist/tuber-*.tgz "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
 
   verify-public:

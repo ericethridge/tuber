@@ -1,4 +1,4 @@
-# Required: cluster identity shown in annotations.
+# Cluster identity shown in annotations: name and provider are required, region is optional.
 cluster:
   name: ""
   provider: "" # gcp-gke or aws-eks
@@ -49,12 +49,14 @@ rollup:
 # Empty uses tuber's standard Deployment, Job, and Pod rules.
 rules: []
 
+# Informer caches grow with the Pods, Deployments, and Jobs in watched namespaces;
+# raise the memory limit for namespaces with thousands of Pods.
 resources:
   requests:
     cpu: 100m
     memory: 128Mi
   limits:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 500m
+    memory: 256Mi
 nodeSelector: {}
 tolerations: []

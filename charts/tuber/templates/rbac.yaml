@@ -11,6 +11,8 @@ metadata:
   namespace: {{ . }}
   labels:
     {{- include "tuber.labels" $root | nindent 4 }}
+# tuber always starts Pod, Deployment, and Job informers and waits for all of
+# them to sync, so this access is fixed regardless of the configured `rules`.
 rules:
   - apiGroups: [""]
     resources: [pods]

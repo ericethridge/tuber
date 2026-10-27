@@ -89,6 +89,8 @@ spec:
         - name: credentials
           secret:
             secretName: {{ .Values.credentials.existingSecret }}
+            # Dry runs need no DoiT token, so a missing Secret must not block the pod.
+            optional: {{ .Values.dryRun }}
             defaultMode: 0440
             items:
               - key: {{ .Values.credentials.tokenKey }}
