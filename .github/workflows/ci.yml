@@ -1,0 +1,31 @@
+name: Validate app and Helm chart
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        helm: [v3.18.4, v4.3.1]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: azure/setup-helm@v5
+        with:
+          version: ${{ matrix.helm }}
+      - name: Lint examples and test runtime/chart integration
+        run: |
+          helm lint charts/tuber -f charts/tuber/examples/gke.yaml --strict
+          helm lint charts/tuber -f charts/tuber/examples/eks.yaml --strict
+          # Chart files are consumed by Helm subprocesses, outside Go's test cache.
+          go test -count=1 ./...
+          go vet ./...

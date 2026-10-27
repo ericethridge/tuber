@@ -1,8 +1,7 @@
 # syntax=docker/dockerfile:1
-
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS builder
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS builder
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /workspace
 
 COPY go.mod go.sum ./

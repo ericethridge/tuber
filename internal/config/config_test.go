@@ -9,6 +9,45 @@ import (
 	"github.com/ericethridge/tuber/internal/model"
 )
 
+func TestLoadPreviewSkipsCredentialsButValidatesConfiguration(t *testing.T) {
+	for _, key := range []string{"DOIT_SERVICE_ACCOUNT_TOKEN", "DOIT_API_TOKEN", "DOIT_SERVICE_ACCOUNT_TOKEN_FILE", "DOIT_API_TOKEN_FILE", "TUBER_DRY_RUN"} {
+		t.Setenv(key, "")
+	}
+	for _, tc := range []struct {
+		name    string
+		extra   string
+		wantErr string
+	}{
+		{name: "no credentials"},
+		{name: "unreadable token file", extra: "doit:\n  serviceAccountTokenFile: " + t.TempDir()},
+		{name: "unreadable legacy token file", extra: "doit:\n  apiTokenFile: " + t.TempDir()},
+		{name: "unknown field", extra: "watchNamespace: [default]", wantErr: "watchNamespace"},
+		{name: "bad template", extra: "doit:\n  contentTemplate: '{{.Nonexistent}}'", wantErr: "contentTemplate"},
+		{name: "invalid namespaces", extra: "rules:\n  - apiVersion: apps/v1\n    kind: Deployment\n    namespaces: [unwatched]", wantErr: "not in watchNamespaces"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			raw := "cluster:\n  name: test\n  provider: gcp-gke\nwatchNamespaces: [default]\n" + tc.extra + "\n"
+			if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadPreview(path)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("LoadPreview error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("offline preview required credentials: %v", err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatal("runtime loading must still require readable credentials")
+			}
+		})
+	}
+}
+
 func TestParseValidConfigGKEAndEKS(t *testing.T) {
 	tests := []struct {
 		name         string

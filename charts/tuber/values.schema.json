@@ -1,0 +1,116 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["cluster", "watchNamespaces", "credentials"],
+  "properties": {
+    "cluster": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "provider"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "provider": {"type": "string", "enum": ["gcp-gke", "aws-eks"]},
+        "region": {"type": "string"}
+      }
+    },
+    "watchNamespaces": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"$ref": "#/definitions/namespace"}
+    },
+    "credentials": {
+      "type": "object", "additionalProperties": false,
+      "required": ["existingSecret", "tokenKey"],
+      "properties": {
+        "existingSecret": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"},
+        "tokenKey": {"type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._-]+$"},
+        "tenantIdKey": {"type": "string", "pattern": "^[a-zA-Z0-9._-]*$"}
+      }
+    },
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "repository": {"type": "string", "minLength": 1, "pattern": "^([a-z0-9.-]+(:[0-9]+)?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$"},
+        "tag": {"type": "string", "pattern": "^([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})?$"},
+        "digest": {"type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$"},
+        "pullPolicy": {"type": "string", "enum": ["IfNotPresent", "Always", "Never"]}
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {"type": "object", "required": ["name"], "additionalProperties": false, "properties": {"name": {"type": "string", "minLength": 1}}}
+    },
+    "serviceAccount": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "create": {"type": "boolean"},
+        "name": {"type": "string", "maxLength": 253, "pattern": "^([a-z0-9]([a-z0-9.-]*[a-z0-9])?)?$"},
+        "annotations": {"type": "object", "additionalProperties": {"type": "string"}}
+      }
+    },
+    "rbac": {"type": "object", "additionalProperties": false, "properties": {"create": {"type": "boolean"}}},
+    "dryRun": {"type": "boolean"},
+    "doit": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "baseURL": {"type": "string", "pattern": "^https://"},
+        "validateOnStartup": {"type": "boolean"},
+        "rejectUserTokens": {"type": "boolean"},
+        "defaultReports": {"$ref": "#/definitions/ids"},
+        "defaultLabels": {"$ref": "#/definitions/ids"},
+        "contentTemplate": {"type": "string", "minLength": 1},
+        "rateLimitRPS": {"type": "number", "exclusiveMinimum": 0},
+        "rateLimitBurst": {"type": "integer", "minimum": 1},
+        "timeout": {"$ref": "#/definitions/duration"},
+        "maxRetries": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rollup": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "ignoreOwnedPods": {"type": "boolean"},
+        "trackOOMKilled": {"type": "boolean"},
+        "dedupTTL": {"$ref": "#/definitions/duration"},
+        "resyncPeriod": {"$ref": "#/definitions/duration"},
+        "workers": {"type": "integer", "minimum": 1}
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["apiVersion", "kind"],
+        "properties": {
+          "name": {"type": "string"},
+          "apiVersion": {"type": "string", "enum": ["v1", "apps/v1", "batch/v1"]},
+          "kind": {"type": "string", "enum": ["Pod", "Deployment", "Job"]},
+          "namespaces": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/definitions/namespace"}},
+          "labelSelector": {"type": "string"},
+          "actions": {"type": "array", "items": {"type": "string", "enum": ["Created", "Scaled", "RolledOut", "Deleted", "Completed", "Failed", "OOMKilled"]}},
+          "reports": {"$ref": "#/definitions/ids"},
+          "labels": {"$ref": "#/definitions/ids"}
+        },
+        "allOf": [
+          {"if": {"properties": {"kind": {"const": "Pod"}}}, "then": {"properties": {"apiVersion": {"const": "v1"}, "actions": {"items": {"enum": ["Created", "Deleted", "OOMKilled"]}}}}},
+          {"if": {"properties": {"kind": {"const": "Deployment"}}}, "then": {"properties": {"apiVersion": {"const": "apps/v1"}, "actions": {"items": {"enum": ["Created", "Scaled", "RolledOut", "Deleted"]}}}}},
+          {"if": {"properties": {"kind": {"const": "Job"}}}, "then": {"properties": {"apiVersion": {"const": "batch/v1"}, "actions": {"items": {"enum": ["Created", "Completed", "Failed"]}}}}}
+        ]
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {"$ref": "#/definitions/resources"},
+        "limits": {"$ref": "#/definitions/resources"}
+      }
+    },
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {"type": "array", "items": {"type": "object"}}
+  },
+  "definitions": {
+    "namespace": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", "not": {"enum": ["all"]}},
+    "duration": {"type": "string", "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$"},
+    "ids": {"type": "array", "maxItems": 20, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$"}},
+    "resources": {"type": "object", "required": ["cpu", "memory"], "additionalProperties": {"type": ["string", "number"]}}
+  }
+}

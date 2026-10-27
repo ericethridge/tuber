@@ -6,7 +6,7 @@ metadata:
 data:
   config.yaml: |
     cluster:
-      name: gke-prod-us-central1
+      name: my-gke-cluster
       provider: gcp-gke
       region: us-central1
 

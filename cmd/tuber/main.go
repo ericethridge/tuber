@@ -27,17 +27,18 @@ import (
 func main() {
 	var (
 		configPath     = flag.String("config", envOrDefault("TUBER_CONFIG", "/etc/tuber/config.yaml"), "Path to tuber YAML configuration file")
-		kubeconfigPath = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "Path to kubeconfig (leave empty for in-cluster config)")
+		kubeconfigPath = flag.String("kubeconfig", "", "Path to a single kubeconfig file (default: in-cluster credentials, then standard KUBECONFIG loading rules)")
 		dryRunFlag     = flag.Bool("dry-run", false, "Log DoiT annotation payloads without sending HTTP POST requests")
 		healthAddr     = flag.String("health-addr", ":8080", "Address for /healthz and /readyz HTTP probes")
 		leaderElect    = flag.Bool("leader-elect", false, "Enable Kubernetes Lease leader election for HA deployments")
 		leaderNS       = flag.String("leader-elect-namespace", envOrDefault("POD_NAMESPACE", "tuber-system"), "Namespace for the leader election Lease resource")
 		leaderID       = flag.String("leader-elect-id", "tuber-leader-lock", "Name of the leader election Lease resource")
 		validateOnly   = flag.Bool("validate-only", false, "Validate configuration file and exit")
+		previewConfig  = flag.Bool("preview-config", false, "Preview effective settings and sample annotation text offline, excluding credentials")
 	)
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
@@ -50,14 +51,25 @@ func main() {
 		cfg *config.Config
 		err error
 	)
-	if *validateOnly {
+	if *previewConfig {
+		cfg, err = config.LoadPreview(*configPath)
+	} else if *validateOnly {
 		cfg, err = config.LoadValidation(*configPath)
 	} else {
 		cfg, err = config.Load(*configPath)
 	}
 	if err != nil {
-		logger.Error("configuration validation failed", "path", *configPath, "error", err)
+		logger.Error("configuration validation failed", "path", *configPath, "error", err,
+			"hint", "Check the YAML field named in the error and environment overrides; use --preview-config to inspect effective settings. See README.md troubleshooting.")
 		os.Exit(1)
+	}
+
+	if *previewConfig {
+		if err := writeConfigPreview(os.Stdout, cfg); err != nil {
+			logger.Error("configuration preview failed", "error", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *validateOnly {
@@ -67,13 +79,15 @@ func main() {
 			"watchNamespaces", cfg.WatchNamespaces,
 			"rules", len(cfg.Rules),
 			"dryRun", cfg.DryRun,
+			"note", "Offline check only; Kubernetes access, token validity, and report permissions have not been verified.",
 		)
 		return
 	}
 
 	k8sCfg, err := buildKubeConfig(*kubeconfigPath)
 	if err != nil {
-		logger.Error("failed to initialize Kubernetes client config", "error", err)
+		logger.Error("failed to initialize Kubernetes client config", "error", err,
+			"hint", "For local runs, set --kubeconfig to a readable kubeconfig file. In-cluster, check the pod ServiceAccount and mounted Kubernetes credentials.")
 		os.Exit(1)
 	}
 
@@ -89,7 +103,8 @@ func main() {
 		valResp, err := doitClient.ValidateServiceAccount(valCtx)
 		cancelVal()
 		if err != nil {
-			logger.Error("DoiT Service Account token validation failed", "error", err)
+			logger.Error("DoiT Service Account token validation failed", "error", err,
+				"hint", "Check the DoiT service account token, tenant ID, API reachability, and Cloud Analytics permissions. Use --preview-config for offline inspection.")
 			os.Exit(1)
 		}
 		logger.Info("validated DoiT Service Account token",
