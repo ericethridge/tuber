@@ -49,6 +49,9 @@ func (f *Formatter) Format(event model.WorkloadEvent) (doit.CreateAnnotationRequ
 	event.Summary = model.SanitizeText(event.Summary, MaxEventSummaryLength)
 	event.Name = model.SanitizeText(event.Name, 253)
 	event.Namespace = model.SanitizeText(event.Namespace, 63)
+	event.ClusterVersion = model.SanitizeText(event.ClusterVersion, 128)
+	event.Distribution = model.SanitizeText(event.Distribution, 63)
+	event.ClusterID = model.SanitizeText(event.ClusterID, 253)
 
 	var buf bytes.Buffer
 	if err := f.tmpl.Execute(&buf, event); err != nil {

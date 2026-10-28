@@ -70,11 +70,45 @@ rules:
 	if len(preview.Rules) != 1 || preview.Rules[0].LabelSelector != "team=payments" || len(preview.DefaultReports) != 1 {
 		t.Errorf("routing settings not reflected: %+v", preview)
 	}
+	if preview.Cluster.DetectIntervalOrDefault() != config.DefaultDetectInterval {
+		t.Errorf("detect interval default not reflected: %+v", preview.Cluster)
+	}
 	if !strings.Contains(preview.SampleNote, "not simulated") {
 		t.Error("sample must explain that routing is not simulated")
 	}
 	if err := writeConfigPreview(failingWriter{}, cfg); err == nil || !strings.Contains(err.Error(), errPreviewWrite.Error()) {
 		t.Errorf("write failure = %v, want %v", err, errPreviewWrite)
+	}
+}
+
+func TestConfigPreviewSampleClusterValues(t *testing.T) {
+	t.Setenv("TUBER_CLUSTER_ID", "")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	err := os.WriteFile(path, []byte(`
+cluster:
+  name: edge
+  provider: self-hosted
+watchNamespaces: [default]
+doit:
+  contentTemplate: "{{.Distribution}} {{.ClusterVersion}} {{.ClusterID}} {{.Name}}"
+`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadPreview(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := writeConfigPreview(&out, cfg); err != nil {
+		t.Fatal(err)
+	}
+	var preview configPreview
+	if err := yaml.Unmarshal(out.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if want := "k3s v1.31.0 sample-cluster-id sample-app"; preview.SampleAnnotation != want {
+		t.Errorf("sample annotation = %q, want %q", preview.SampleAnnotation, want)
 	}
 }
 

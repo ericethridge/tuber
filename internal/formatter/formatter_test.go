@@ -110,3 +110,56 @@ func TestFormatterSanitizesControlCharsInvalidIDsAndCapsLength(t *testing.T) {
 		t.Errorf("Labels = %v, want %v (invalid IDs rejected)", req.Labels, wantLabels)
 	}
 }
+
+func TestFormatterRendersClusterDetectionFields(t *testing.T) {
+	tmpl := "[{{.Distribution}} {{.ClusterVersion}} id={{.ClusterID}}] {{.Name}}"
+	f, err := New(config.DoiTConfig{ContentTemplate: tmpl})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	tests := []struct {
+		name string
+		ev   model.WorkloadEvent
+		want string
+	}{
+		{
+			name: "detected values",
+			ev:   model.WorkloadEvent{Name: "app", ClusterVersion: "v1.31.4+k3s1", Distribution: "k3s", ClusterID: "uid-1"},
+			want: "[k3s v1.31.4+k3s1 id=uid-1] app",
+		},
+		{
+			name: "empty values render as empty text",
+			ev:   model.WorkloadEvent{Name: "app"},
+			want: "[  id=] app",
+		},
+		{
+			name: "control characters stripped",
+			ev:   model.WorkloadEvent{Name: "app", ClusterVersion: "v1.31.0\x00", Distribution: "custom\n", ClusterID: "id\x7f"},
+			want: "[custom v1.31.0 id=id] app",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := f.Format(tc.ev)
+			if err != nil {
+				t.Fatalf("Format() error: %v", err)
+			}
+			if req.Content != tc.want {
+				t.Errorf("Content = %q, want %q", req.Content, tc.want)
+			}
+		})
+	}
+
+	// The default template is unchanged and ignores the new fields.
+	def, err := New(config.DoiTConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := def.Format(model.WorkloadEvent{ClusterName: "c", CloudProvider: "self-hosted", Namespace: "ns", Kind: "Deployment", Name: "app", Action: model.ActionCreated, Summary: "s", ClusterVersion: "v1.31.0", Distribution: "k3s", ClusterID: "id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "[self-hosted/c] ns/Deployment/app Created: s"; req.Content != want {
+		t.Errorf("default Content = %q, want %q", req.Content, want)
+	}
+}

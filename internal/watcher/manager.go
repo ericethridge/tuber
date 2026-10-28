@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/ericethridge/tuber/internal/cluster"
 	"github.com/ericethridge/tuber/internal/config"
 	"github.com/ericethridge/tuber/internal/doit"
 	"github.com/ericethridge/tuber/internal/formatter"
@@ -37,6 +38,21 @@ type Manager struct {
 	hasSynced []cache.InformerSynced
 	synced    atomic.Bool
 	logger    *slog.Logger
+	// clusterInfo returns the current detected cluster metadata stamped on every event.
+	clusterInfo func() cluster.Info
+}
+
+// ManagerOption customizes optional Manager behavior.
+type ManagerOption func(*Manager)
+
+// WithClusterInfo sets the provider of detected cluster metadata stamped on every event.
+// It must be safe for concurrent use; without it the detected fields stay empty.
+func WithClusterInfo(provider func() cluster.Info) ManagerOption {
+	return func(m *Manager) {
+		if provider != nil {
+			m.clusterInfo = provider
+		}
+	}
 }
 
 // NewManager creates and wires a Manager for all namespaces in cfg.WatchNamespaces.
@@ -46,6 +62,7 @@ func NewManager(
 	sink doit.Sink,
 	fmttr *formatter.Formatter,
 	logger *slog.Logger,
+	opts ...ManagerOption,
 ) (*Manager, error) {
 	if cfg == nil {
 		return nil, errors.New("config cannot be nil")
@@ -73,8 +90,12 @@ func NewManager(
 		queue: workqueue.NewTypedRateLimitingQueue(
 			workqueue.DefaultTypedControllerRateLimiter[string](),
 		),
-		items:  make(map[string]model.WorkloadEvent),
-		logger: logger,
+		items:       make(map[string]model.WorkloadEvent),
+		logger:      logger,
+		clusterInfo: func() cluster.Info { return cluster.Info{} },
+	}
+	for _, opt := range opts {
+		opt(m)
 	}
 
 	if err := m.registerInformers(); err != nil {
@@ -163,7 +184,14 @@ func (m *Manager) registerInformers() error {
 }
 
 func (m *Manager) enqueueAll(events []model.WorkloadEvent) {
+	if len(events) == 0 {
+		return
+	}
+	info := m.clusterInfo()
 	for _, ev := range events {
+		ev.ClusterVersion = info.Version
+		ev.Distribution = info.Distribution
+		ev.ClusterID = info.ID
 		fp := ev.Fingerprint()
 		if !m.dedup.ShouldProcess(fp) {
 			m.logger.Debug("suppressing duplicate workload event",

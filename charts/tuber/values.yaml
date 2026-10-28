@@ -1,8 +1,23 @@
 # Cluster identity shown in annotations: name and provider are required, region is optional.
 cluster:
   name: ""
-  provider: "" # gcp-gke or aws-eks
+  # Lowercase label, up to 63 characters. Known values: gcp-gke, aws-eks,
+  # azure-aks, self-hosted, other. Any other lowercase name is accepted.
+  provider: ""
   region: ""
+  # Optional fixed cluster ID for {{.ClusterID}}; overrides the detected ID.
+  id: ""
+  # Read the kube-system namespace UID as the cluster ID. Adds a ClusterRole
+  # allowing only `get` on the kube-system namespace (needs rbac.create).
+  detectID: false
+  # How often to recheck the Kubernetes version and distribution. "0" disables
+  # rechecks; otherwise at least 1m.
+  detectInterval: 1h
+  # Extra distribution rules checked before the built-ins; first match wins.
+  # `match` is a regex on the API server gitVersion; at most 20 rules.
+  #   - match: "\\+my-distro"
+  #     name: my-distro
+  distributions: []
 
 # Explicit namespaces, which must already exist. No wildcards.
 watchNamespaces:
