@@ -8,11 +8,11 @@ access and node image pulls.
 
 ## Release availability
 
-The current chart version is `0.1.1` (first released as `0.1.0`). The OCI installation command below works
+The current chart version is `0.1.2` (first released as `0.1.0`). The OCI installation command below works
 after maintainers publish the matching release and make both GHCR packages public.
 Until then, install the chart from this checkout and override `image.repository`
 and `image.tag` with an image you have already published. Do not assume that
-`v0.1.1` is available just because the chart source exists.
+`v0.1.2` is available just because the chart source exists.
 
 ## 1. Prepare the credentials Secret
 
@@ -63,11 +63,11 @@ are needed for ordinary Kubernetes watches and DoiT token authentication.
 
 ## 3. Preview and install
 
-After release `0.1.1` is published, preview the Kubernetes resources:
+After release `0.1.2` is published, preview the Kubernetes resources:
 
 ```bash
 helm template tuber oci://ghcr.io/ericethridge/charts/tuber \
-  --version 0.1.1 --namespace tuber-system \
+  --version 0.1.2 --namespace tuber-system \
   --values tuber-values.yaml
 ```
 
@@ -75,7 +75,7 @@ Install and wait for readiness:
 
 ```bash
 helm upgrade --install tuber oci://ghcr.io/ericethridge/charts/tuber \
-  --version 0.1.1 --namespace tuber-system \
+  --version 0.1.2 --namespace tuber-system \
   --values tuber-values.yaml --wait --timeout 3m
 ```
 
@@ -174,11 +174,11 @@ image overrides when switching to the published release image.
 
 ```bash
 helm upgrade tuber oci://ghcr.io/ericethridge/charts/tuber \
-  --version 0.1.1 --namespace tuber-system \
+  --version 0.1.2 --namespace tuber-system \
   --values tuber-values.yaml --wait --timeout 3m
 ```
 
-Replace `0.1.1` with the next published version when upgrading. ConfigMap changes
+Replace `0.1.2` with the next published version when upgrading. ConfigMap changes
 automatically change the pod template checksum and trigger a rollout. Changing
 the external credentials Secret requires an explicit restart:
 
@@ -234,9 +234,9 @@ back to one replica to restore the previous installation.
 3. Publish a stable GitHub release with the matching tag, initially `v0.1.0`,
    pointing to the reviewed commit on `main`. The workflow rejects mismatched
    versions and commits outside `main`'s history.
-4. The release workflow tests the source, publishes `ghcr.io/ericethridge/tuber:v0.1.1`
+4. The release workflow tests the source, publishes `ghcr.io/ericethridge/tuber:v0.1.2`
    for amd64/arm64, and publishes the OCI chart at
-   `oci://ghcr.io/ericethridge/charts/tuber:0.1.1`. It does not publish `latest`.
+   `oci://ghcr.io/ericethridge/charts/tuber:0.1.2`. It does not publish `latest`.
 5. On the first publication, use each GHCR package's settings to make both the
    container package and chart package **public**. Workflow credentials need
    package write access; organization policy must allow public packages.
