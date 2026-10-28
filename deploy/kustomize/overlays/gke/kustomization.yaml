@@ -12,4 +12,4 @@ patches:
 # images:
 #   - name: ghcr.io/ericethridge/tuber
 #     newName: us-central1-docker.pkg.dev/YOUR_PROJECT_ID/tuber/tuber
-#     newTag: v0.1.2
+#     newTag: v0.2.0
