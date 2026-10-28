@@ -45,6 +45,11 @@ jobs:
           test "$VERSION" = "$CHART_VERSION"
           test "$VERSION" = "$APP_VERSION"
           git merge-base --is-ancestor HEAD origin/main
+          BASE_IMAGE="$(awk '/image: ghcr.io/ {print $2; exit}' deploy/kustomize/base/deployment.yaml)"
+          test "$BASE_IMAGE" = "ghcr.io/${GITHUB_REPOSITORY,,}:v${VERSION}" || {
+            echo "Kustomize base image ($BASE_IMAGE) must be ghcr.io/${GITHUB_REPOSITORY,,}:v${VERSION}" >&2
+            exit 1
+          }
           CHART_IMAGE="$(awk '/^image:/ {i=1; next} i && /^  repository:/ {print $2; exit}' charts/tuber/values.yaml)"
           test "$CHART_IMAGE" = "ghcr.io/${GITHUB_REPOSITORY,,}" || {
             echo "values.yaml image.repository ($CHART_IMAGE) must equal ghcr.io/${GITHUB_REPOSITORY,,}" >&2

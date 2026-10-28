@@ -226,7 +226,9 @@ back to one replica to restore the previous installation.
 ## Maintainer release process
 
 1. Update `Chart.yaml`'s `version` and `appVersion` together through a working
-   branch and PR. Update the versioned examples in this README too.
+   branch and PR. Update the versioned examples in this README and the image tag in
+   `deploy/kustomize/base/deployment.yaml` too; the release workflow rejects a
+   mismatch.
 2. Merge after CI passes. CI lints and tests the chart with Helm 3 and 4, and runs
    rendered configs through the same validator as the application.
 3. Publish a stable GitHub release with the matching tag, initially `v0.1.0`,

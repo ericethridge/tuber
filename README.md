@@ -208,10 +208,12 @@ Validate your changes locally before applying:
 
 ### 3. Build and Select a Container Image
 
-The Deployment currently references `ghcr.io/ericethridge/tuber:latest`. Before applying
-an overlay, build and push this source to a registry your cluster can pull from,
-then set an `images` entry in your chosen overlay's `kustomization.yaml`. Replace
-`YOUR_REGISTRY/tuber` with your registry repository:
+The Deployment references the public release image
+`ghcr.io/ericethridge/tuber:v0.1.1` (amd64 and arm64), so no image setup is needed
+for a standard install. The steps below are only for running your own build: push
+this source to a registry your cluster can pull from, then set an `images` entry in
+your chosen overlay's `kustomization.yaml`. Replace `YOUR_REGISTRY/tuber` with your
+registry repository:
 
 ```bash
 docker build --platform=linux/amd64 -t YOUR_REGISTRY/tuber:v1 .
@@ -229,7 +231,7 @@ images:
 
 The example targets Linux amd64 worker nodes. For arm64 workers, use
 `--platform=linux/arm64` instead; the Dockerfile compiles for the selected platform.
-For a new release, choose a new image tag and update the overlay to match.
+For your own builds, choose a new image tag each time and update the overlay to match.
 
 Review `patch-serviceaccount.yaml` too: the checked-in GKE service account and EKS
 role ARN are environment-specific. Configure them for your environment or remove
@@ -493,3 +495,9 @@ rules:
 ```
 
 To expand from typed `Deployment`/`Job`/`Pod` informers to arbitrary Kubernetes resources (e.g., `StatefulSet`, `DaemonSet`, `HorizontalPodAutoscaler`, `Ingress`, or CRDs), add a `dynamicinformer.DynamicSharedInformerFactory` in `internal/watcher/manager.go` that maps each `WatchRule`'s `apiVersion` + `kind` via RESTMapper to a `schema.GroupVersionResource` and feeds `unstructured.Unstructured` events into the same `Evaluator` -> `Deduplicator` -> `Formatter` -> `DoiT Sink` pipeline.
+
+---
+
+## License
+
+tuber is released under the [MIT License](LICENSE). See also [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
