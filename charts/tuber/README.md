@@ -21,10 +21,18 @@ Prerequisites: Helm 3.18+ or Helm 4, `kubectl` configured for the intended clust
 and permission to create resources in the release namespace and Roles and
 RoleBindings in each watched namespace. Watched namespaces must already exist.
 
+Point `kubectl` and `helm` at the right cluster before you run anything. Both read
+the file named by `KUBECONFIG` (otherwise `~/.kube/config`). If you see
+`Kubernetes cluster unreachable: ... localhost:8080`, no kubeconfig was found; see
+[Troubleshooting](#troubleshooting). Run `helm` and `kubectl` as your own user, not
+with `sudo`: root has its own home directory and does not see your `KUBECONFIG`.
+With several clusters, add `--kube-context NAME` to each `helm` command.
+
 Confirm the context and create the installation namespace if necessary:
 
 ```bash
 kubectl config current-context
+kubectl get nodes
 kubectl create namespace tuber-system --dry-run=client -o yaml | kubectl apply -f -
 ```
 
@@ -37,7 +45,17 @@ kubectl -n tuber-system create secret generic tuber-doit-credentials \
   --from-file=service-account-token=/path/to/your/token-file
 ```
 
-Replace the file path with your existing token file. If your Secret already
+Replace the file path with your existing token file. If the token is in an
+environment variable such as `DOIT_API_TOKEN`, pipe it in so it never appears in the
+command line or shell history:
+
+```bash
+printf '%s' "$DOIT_API_TOKEN" | kubectl -n tuber-system create secret generic \
+  tuber-doit-credentials --from-file=service-account-token=/dev/stdin
+```
+
+The token must belong to a DoiT *service account*; tuber rejects personal tokens at
+startup. If your Secret already
 exists (including one managed by External Secrets), reuse it. For multi-tenant
 accounts, also create a `tenant-id` key. Never put the token in chart values,
 `--set`, or Git. Helm does not create, store in its release, or delete this Secret.
@@ -63,6 +81,30 @@ providers are in [examples/gke.yaml](examples/gke.yaml) and
 [self-hosted and generic clusters](#self-hosted-and-generic-clusters). No changes to ServiceAccount IAM annotations
 are needed for ordinary Kubernetes watches and DoiT token authentication.
 
+To send annotations to a specific report, add its ID (from the report's URL in the
+DoiT Console, `/reports/<REPORT_ID>`). Service account tokens can only see reports
+that are shared organization-wide or preset reports; a private report returns
+`403 Forbidden`:
+
+```yaml
+doit:
+  defaultReports:
+    - YOUR_REPORT_ID
+```
+
+**How values files combine.** Helm starts from the chart's own
+[values.yaml](values.yaml), then applies each `-f` file in order; later files win,
+and nested maps are merged key by key. Always put your settings in your own file and
+never edit the chart's `values.yaml`: an edit there is silently overridden by your
+file and can break the chart. You can split settings across files, for example:
+
+```bash
+helm upgrade --install tuber ./charts/tuber -n tuber-system \
+  -f tuber-values.yaml -f tuber-template.yaml
+```
+
+Run `helm get values tuber -n tuber-system` to see exactly what was applied.
+
 ## 3. Preview and install
 
 After release `0.1.2` is published, preview the Kubernetes resources:
@@ -81,22 +123,46 @@ helm upgrade --install tuber oci://ghcr.io/ericethridge/charts/tuber \
   --values tuber-values.yaml --wait --timeout 3m
 ```
 
-From this repository checkout, replace the OCI reference with `./charts/tuber`
-and omit `--version`. Before the first release, add your published image override:
+### Install from a repository checkout
+
+To try an unreleased version, install from the checkout (replace the OCI reference
+with `./charts/tuber` and omit `--version`) with an image your cluster can pull.
+Either point at an image you have pushed to a registry:
 
 ```bash
 helm upgrade --install tuber ./charts/tuber \
   --namespace tuber-system --values tuber-values.yaml \
-  --set image.repository=us-central1-docker.pkg.dev/YOUR_PROJECT_ID/tuber/tuber \
-  --set image.tag=v1 --wait --timeout 3m
+  --set image.repository=YOUR_REGISTRY/tuber --set image.tag=YOUR_TAG \
+  --wait --timeout 3m
 ```
 
-That override is a sample image path; substitute your own published image. It
-is only needed until the first release is published; after that, drop it and use
-the release image. Private images require appropriate node access or
-`imagePullSecrets`. Keep overrides in your values file for future
-upgrades. If tuber is already installed with Kustomize, use the migration steps
-below before installing Helm resources with conflicting names.
+or build the image locally and load it straight into the cluster's container
+runtime, with no registry. Build for the node's architecture (`uname -m`: `x86_64`
+is amd64, `aarch64` is arm64):
+
+```bash
+docker build -t tuber:dev .                       # add --platform=linux/amd64 or linux/arm64 if needed
+docker save tuber:dev | sudo k3s ctr images import -   # k3s on this machine
+# k3d image import tuber:dev -c CLUSTER_NAME             # k3d
+# kind load docker-image tuber:dev                       # kind
+```
+
+then set these in your values file so Kubernetes uses the loaded image and does not
+try to pull it:
+
+```yaml
+image:
+  repository: tuber
+  tag: dev
+  pullPolicy: Never
+```
+
+Building the Go binary needs about 1 GB of memory; on a small VM, build on another
+machine and copy the image over (`docker save tuber:dev | ssh USER@HOST 'sudo k3s ctr
+images import -'`). Private registries need node access or `imagePullSecrets`. Keep
+overrides in your values file for future upgrades. If tuber is already installed with
+Kustomize, use the migration steps below before installing Helm resources with
+conflicting names.
 
 The chart validates required settings, namespace syntax, image references, and
 supported rule shapes before rendering. It does not check cluster connectivity,
@@ -120,6 +186,8 @@ DoiT. Initial workloads are suppressed. Set `dryRun: true` in your values file
 to log payloads without calling DoiT; the Secret name is still required, but
 the pod starts even if the Secret does not exist yet. Dry-run logs demonstrate formatting but not delivery.
 
+### Troubleshooting
+
 For failures, inspect the actual events and pod state:
 
 ```bash
@@ -129,8 +197,25 @@ kubectl -n tuber-system logs deployment/tuber --tail=100
 helm status tuber --namespace tuber-system
 ```
 
+- `Kubernetes cluster unreachable: ... localhost:8080`: Helm found no kubeconfig.
+  Set `export KUBECONFIG=/path/to/kubeconfig` (for k3s, copy
+  `/etc/rancher/k3s/k3s.yaml` to your home directory and `chown` it to yourself),
+  or pass `--kubeconfig`. This also happens under `sudo`; run as your own user, use
+  `sudo -E`, or pass `--kubeconfig /etc/rancher/k3s/k3s.yaml`.
+- `invalid ownership metadata ... must be set to "Helm"`: objects with the same
+  names already exist, usually from a Kustomize install. Use a different release
+  name or follow [the migration steps](#migrate-an-existing-kustomize-installation).
+- `cannot load values.yaml` or `did not find expected key`: a YAML file has a
+  syntax error. If it names the chart's own `values.yaml`, restore it with
+  `git checkout charts/tuber/values.yaml` and keep your settings in your own file.
+- My `contentTemplate` change has no effect: your `-f` file overrides the chart
+  default. Check `helm get values tuber -n tuber-system`.
 - `ImagePullBackOff`: confirm the exact version exists and nodes can pull it.
+- `ErrImageNeverPull`: with `pullPolicy: Never` the image must already be on the
+  node; import it as described above.
 - `FailedMount`: check the external Secret name and token key in the release namespace.
+- `403 Forbidden` from DoiT for a report: the report is private; share it
+  organization-wide or use a preset report.
 - RBAC errors: check Roles and RoleBindings in every watched namespace.
 - Readiness timeout: inspect informer errors, namespace access, and DoiT startup
   authentication errors. A newly created Autopilot node may take longer than 3m;
@@ -213,10 +298,18 @@ They render as empty text when not detected. The default template is unchanged.
 | `{{.Distribution}}` | `k3s` | First matching distribution rule, else `unknown` |
 | `{{.ClusterID}}` | `my-cluster-id` | `cluster.id`, else the detected `kube-system` UID |
 
+A readable example that leads with the action and names the cluster:
+
 ```yaml
 doit:
-  contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+  contentTemplate: '{{.Action}} {{.Kind}} {{.Namespace}}/{{.Name}} on {{.ClusterName}} ({{.Distribution}} {{.ClusterVersion}}): {{.Summary}}'
 ```
+
+This renders as `Created Pod default/web on my-k3s (k3s v1.31.2+k3s1): images=web=nginx:stable`.
+The full cluster ID is a long UUID; to show a short form use
+`{{printf "%.8s" .ClusterID}}`. Put the template in single quotes when it contains
+double quotes. The rendered text is limited to 1,024 characters. `{{.Summary}}`
+comes from tuber and cannot be reworded in the template.
 
 **Custom distribution rules.** If your platform is detected as `unknown` or as the
 wrong built-in, add a rule. Each `match` is a Go regular expression tested against
@@ -229,6 +322,35 @@ cluster:
     - match: "\\+my-distro"
       name: my-distro
 ```
+
+**Example: k3s on a VM.** Run these on the VM, from a checkout of this repository:
+
+```bash
+sudo cp /etc/rancher/k3s/k3s.yaml ~/k3s.yaml && sudo chown $USER ~/k3s.yaml
+export KUBECONFIG=~/k3s.yaml                 # also add this to ~/.bashrc
+kubectl get nodes                            # the node must be Ready
+
+kubectl create namespace tuber-system
+printf '%s' "$DOIT_API_TOKEN" | kubectl -n tuber-system create secret generic \
+  tuber-doit-credentials --from-file=service-account-token=/dev/stdin
+
+cat > tuber-values.yaml <<'EOF'
+cluster: {name: my-k3s, provider: self-hosted, detectID: true}
+watchNamespaces: [default]
+credentials: {existingSecret: tuber-doit-credentials}
+dryRun: true        # set to false to send annotations to DoiT
+EOF
+
+helm upgrade --install tuber ./charts/tuber -n tuber-system -f tuber-values.yaml \
+  --set image.repository=tuber --set image.tag=dev --set image.pullPolicy=Never \
+  --wait --timeout 3m        # needs the locally loaded image; see "Install from a repository checkout"
+kubectl -n tuber-system logs deploy/tuber --tail=30
+```
+
+The log should show a line like `detected cluster: ... distribution=k3s ...`. With a
+released image, drop the three `--set image...` flags. k3sup-installed clusters are
+ordinary k3s: the kubeconfig k3sup writes locally, or `/etc/rancher/k3s/k3s.yaml` on
+the server, works the same way.
 
 **Kustomize.** The Kustomize manifests do not include the ClusterRole. Set
 `cluster.id` by hand in your ConfigMap (or the `TUBER_CLUSTER_ID` environment

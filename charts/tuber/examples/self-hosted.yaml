@@ -18,5 +18,7 @@ watchNamespaces:
   - default
 credentials:
   existingSecret: tuber-doit-credentials
+# Optional: send annotations to a specific report (shared org-wide or preset).
 # doit:
-#   contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+#   defaultReports: [YOUR_REPORT_ID]
+#   contentTemplate: '{{.Action}} {{.Kind}} {{.Namespace}}/{{.Name}} on {{.ClusterName}} ({{.Distribution}} {{.ClusterVersion}}): {{.Summary}}'

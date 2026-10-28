@@ -11,9 +11,11 @@
 For the simplest installation, use the [Helm chart guide](charts/tuber/README.md).
 It takes a small values file and an existing DoiT credentials Secret, and manages
 the Deployment, configuration, ServiceAccount, and namespace-scoped RBAC. The
-guide covers GKE/EKS, upgrades, uninstall, and migration from Kustomize. Public
-OCI installation becomes available after the first chart/image release; until
-then, the guide includes local chart installation with a published image override.
+guide covers GKE, EKS, and self-hosted clusters (including k3s), upgrades,
+uninstall, migration from Kustomize, and a
+[troubleshooting list](charts/tuber/README.md#troubleshooting) for common install
+errors. It also shows how to install an unreleased version from a checkout with a
+locally built image.
 
 The following source-build and Kustomize instructions remain available for local
 development and existing installations. Kustomize is the legacy install path:
@@ -488,8 +490,11 @@ and render as empty text when not detected. The default template is unchanged.
 
 ```yaml
 doit:
-  contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+  contentTemplate: '{{.Action}} {{.Kind}} {{.Namespace}}/{{.Name}} on {{.ClusterName}} ({{.Distribution}} {{.ClusterVersion}}): {{.Summary}}'
 ```
+
+This renders as `Created Pod default/web on my-k3s (k3s v1.31.2+k3s1): images=web=nginx:stable`.
+Use `{{printf "%.8s" .ClusterID}}` for a short cluster ID.
 
 Offline modes (`--validate-only`, `--preview-config`) use the sample values
 `v1.31.0`, `k3s`, and `sample-cluster-id`.
