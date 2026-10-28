@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/assets/tuber-banner.png" alt="tuber — Kubernetes Monitoring Integration for DoiT Cloud Intelligence Annotations (For GKE and EKS)" width="100%" />
+  <img src="docs/assets/tuber-banner.png" alt="tuber — Kubernetes Monitoring Integration for DoiT Cloud Intelligence Annotations (For GKE, EKS, and self-hosted clusters)" width="100%" />
 </p>
 
 # `tuber` — Kubernetes Workload Monitor for DoiT Cloud Intelligence Annotations
 
-`tuber` is a lightweight, in-cluster Kubernetes monitoring agent written in Go (`client-go`) for **Google Kubernetes Engine (GKE)** and **Amazon EKS** clusters. It watches workload lifecycle changes across an explicit allowlist of namespaces, applies **smart workload rollup** so replica pod churn does not flood your cost charts, and automatically creates contextual annotations in **DoiT Cloud Intelligence** via the [DoiT Annotations API](https://developer.doit.com/docs/annotations-api) (`POST https://api.doit.com/analytics/v1/annotations`).
+`tuber` is a lightweight, in-cluster Kubernetes monitoring agent written in Go (`client-go`) for **any conformant Kubernetes cluster**: **Google Kubernetes Engine (GKE)**, **Amazon EKS**, or a self-hosted cluster on your own VMs (k3s, RKE2, kubeadm, and others). It watches workload lifecycle changes across an explicit allowlist of namespaces, applies **smart workload rollup** so replica pod churn does not flood your cost charts, and automatically creates contextual annotations in **DoiT Cloud Intelligence** via the [DoiT Annotations API](https://developer.doit.com/docs/annotations-api) (`POST https://api.doit.com/analytics/v1/annotations`).
 
 ## Start here
 
@@ -40,6 +40,7 @@ namespace allowlist:
 | :--- | :--- |
 | GKE | [GKE configuration](deploy/kustomize/overlays/gke/patch-config.yaml) |
 | EKS | [EKS configuration](deploy/kustomize/overlays/eks/patch-config.yaml) |
+| Self-hosted or other | [Base configuration](deploy/kustomize/base/configmap.yaml); set `cluster.name` and `cluster.provider` (for example `self-hosted`), or see [self-hosted and generic clusters](#self-hosted-and-generic-clusters) |
 
 Inspect the effective settings and sample annotation text locally. This command
 needs no credentials or cluster access:
@@ -179,6 +180,12 @@ Run `./bin/tuber --help` for all flags. Other runtime flags are:
 ---
 
 ## Deploying to GKE (GCP) and EKS (AWS)
+
+These Kustomize overlays cover GKE and EKS. For a self-hosted or other cluster, use
+the [Helm chart](charts/tuber/README.md) (recommended, with a
+[k3s walkthrough](charts/tuber/README.md#self-hosted-and-generic-clusters)), or
+apply `deploy/kustomize/base` after setting your cluster name and provider in its
+`configmap.yaml`.
 
 ### 1. Create the DoiT Service Account Credentials Secret
 Either apply `deploy/kustomize/base/secret.example.yaml` with your DoiT Service Account API token or use External Secrets Operator with **GCP Secret Manager** (`deploy/kustomize/overlays/gke/externalsecret-gcp.example.yaml`) or **AWS Secrets Manager** (`deploy/kustomize/overlays/eks/externalsecret-aws.example.yaml`):
@@ -321,7 +328,7 @@ contentTemplate: "[{{.CloudProvider}}/{{.ClusterName}}] {{.Namespace}}/{{.Kind}}
 
 | Template Variable | Example Value | Description |
 | :--- | :--- | :--- |
-| `{{.CloudProvider}}` | `gcp-gke` / `aws-eks` | Value of `cluster.provider` |
+| `{{.CloudProvider}}` | `gcp-gke` / `aws-eks` / `self-hosted` | Value of `cluster.provider` |
 | `{{.ClusterName}}` | `gke-prod-us-central1` | Value of `cluster.name` |
 | `{{.Region}}` | `us-central1` | Value of `cluster.region` |
 | `{{.Namespace}}` | `production` | Kubernetes resource namespace |
