@@ -209,7 +209,7 @@ Validate your changes locally before applying:
 ### 3. Build and Select a Container Image
 
 The Deployment references the public release image
-`ghcr.io/ericethridge/tuber:v0.1.1` (amd64 and arm64), so no image setup is needed
+`ghcr.io/ericethridge/tuber:v0.1.2` (amd64 and arm64), so no image setup is needed
 for a standard install. The steps below are only for running your own build: push
 this source to a registry your cluster can pull from, then set an `images` entry in
 your chosen overlay's `kustomization.yaml`. Replace `YOUR_REGISTRY/tuber` with your
