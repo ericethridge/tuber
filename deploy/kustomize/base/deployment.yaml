@@ -22,8 +22,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tuber
-          image: ghcr.io/ericethridge/tuber:latest
-          imagePullPolicy: Always
+          image: ghcr.io/ericethridge/tuber:v0.1.1
+          imagePullPolicy: IfNotPresent
           args:
             - "--config=/etc/tuber/config.yaml"
             - "--health-addr=:8080"
