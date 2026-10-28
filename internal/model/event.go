@@ -37,19 +37,23 @@ const (
 // WorkloadEvent represents a normalized, actionable Kubernetes resource lifecycle change
 // ready to be formatted and sent to the DoiT Cloud Intelligence Annotations API.
 type WorkloadEvent struct {
-	ClusterName   string    `json:"clusterName"`
-	CloudProvider string    `json:"cloudProvider"`
-	Region        string    `json:"region,omitempty"`
-	Namespace     string    `json:"namespace"`
-	Kind          string    `json:"kind"`
-	APIVersion    string    `json:"apiVersion"`
-	Name          string    `json:"name"`
-	UID           string    `json:"uid"`
-	Action        Action    `json:"action"`
-	Summary       string    `json:"summary"`
-	Timestamp     time.Time `json:"timestamp"`
-	Generation    int64     `json:"generation"`
-	StateKey      string    `json:"stateKey,omitempty"`
+	ClusterName   string `json:"clusterName"`
+	CloudProvider string `json:"cloudProvider"`
+	Region        string `json:"region,omitempty"`
+	// Detected cluster metadata; empty when detection is unavailable.
+	ClusterVersion string    `json:"clusterVersion,omitempty"`
+	Distribution   string    `json:"distribution,omitempty"`
+	ClusterID      string    `json:"clusterId,omitempty"`
+	Namespace      string    `json:"namespace"`
+	Kind           string    `json:"kind"`
+	APIVersion     string    `json:"apiVersion"`
+	Name           string    `json:"name"`
+	UID            string    `json:"uid"`
+	Action         Action    `json:"action"`
+	Summary        string    `json:"summary"`
+	Timestamp      time.Time `json:"timestamp"`
+	Generation     int64     `json:"generation"`
+	StateKey       string    `json:"stateKey,omitempty"`
 
 	// Per-resource overrides from K8s annotations (tuber.doit.com/reports, tuber.doit.com/labels).
 	ReportIDs []string `json:"reportIds,omitempty"`

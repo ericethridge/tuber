@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ericethridge/tuber/internal/cluster"
 	"github.com/ericethridge/tuber/internal/config"
 	"github.com/ericethridge/tuber/internal/doit"
 	"github.com/ericethridge/tuber/internal/formatter"
@@ -97,11 +98,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	detector, err := cluster.NewDetector(k8sClient, cfg.Cluster, logger)
+	if err != nil {
+		logger.Error("failed to initialize cluster detection", "error", err)
+		os.Exit(1)
+	}
+	info := detector.Refresh(ctx)
+	logger.Info("detected cluster metadata",
+		"version", info.Version,
+		"distribution", info.Distribution,
+		"clusterId", info.ID,
+		"detectID", cfg.Cluster.DetectID,
+		"detectInterval", cfg.Cluster.DetectIntervalOrDefault().String(),
+	)
+	go detector.Run(ctx)
+
 	doitClient := doit.NewClient(cfg.DoiT, cfg.DryRun, doit.WithLogger(logger))
 	if !cfg.DryRun && cfg.DoiT.ValidateOnStartupEnabled() {
-		valCtx, cancelVal := context.WithTimeout(context.Background(), cfg.DoiT.Timeout)
-		valResp, err := doitClient.ValidateServiceAccount(valCtx)
-		cancelVal()
+		valResp, err := validateToken(ctx, doitClient, cfg.DoiT.Timeout)
 		if err != nil {
 			logger.Error("DoiT Service Account token validation failed", "error", err,
 				"hint", "Check the DoiT service account token, tenant ID, API reachability, and Cloud Analytics permissions. Use --preview-config for offline inspection.")
@@ -119,14 +136,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr, err := watcher.NewManager(cfg, k8sClient, doitClient, fmttr, logger)
+	mgr, err := watcher.NewManager(cfg, k8sClient, doitClient, fmttr, logger, watcher.WithClusterInfo(detector.Current))
 	if err != nil {
 		logger.Error("failed to initialize watcher manager", "error", err)
 		os.Exit(1)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	if strings.TrimSpace(*healthAddr) != "" {
 		healthSrv := server.NewHealthServer(*healthAddr, mgr.Ready, logger)
@@ -210,4 +224,17 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// tokenValidator is the subset of the DoiT client used for startup token validation.
+type tokenValidator interface {
+	ValidateServiceAccount(ctx context.Context) (*doit.ValidateResponse, error)
+}
+
+// validateToken runs startup token validation bounded by timeout and derived from the shutdown
+// context, so a shutdown signal aborts it instead of waiting for the timeout.
+func validateToken(ctx context.Context, v tokenValidator, timeout time.Duration) (*doit.ValidateResponse, error) {
+	valCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return v.ValidateServiceAccount(valCtx)
 }

@@ -1,6 +1,7 @@
 # Install tuber with Helm
 
-The chart installs a single workload monitor into an existing GKE or EKS cluster.
+The chart installs a single workload monitor into an existing GKE, EKS, or
+self-hosted Kubernetes cluster.
 Supply cluster identity, watched namespaces, and an existing DoiT credentials
 Secret. No cloud IAM annotation or registry credentials are required for public
 release images. Cluster network policy must permit Kubernetes API and DoiT API
@@ -58,7 +59,8 @@ credentials:
 
 For EKS, use `provider: aws-eks` and your cluster name/region. Examples for both
 providers are in [examples/gke.yaml](examples/gke.yaml) and
-[examples/eks.yaml](examples/eks.yaml). No changes to ServiceAccount IAM annotations
+[examples/eks.yaml](examples/eks.yaml); for other clusters, see
+[self-hosted and generic clusters](#self-hosted-and-generic-clusters). No changes to ServiceAccount IAM annotations
 are needed for ordinary Kubernetes watches and DoiT token authentication.
 
 ## 3. Preview and install
@@ -141,8 +143,12 @@ these defaults. Unknown values are rejected by the schema to catch misspellings.
 
 | Value | Purpose |
 | :--- | :--- |
-| `cluster.name`, `cluster.provider` | Required annotation identity; provider is `gcp-gke` or `aws-eks` |
+| `cluster.name`, `cluster.provider` | Required annotation identity; provider is a lowercase label such as `gcp-gke`, `aws-eks`, `azure-aks`, `self-hosted`, or `other` (up to 63 characters) |
 | `cluster.region` | Optional region metadata |
+| `cluster.id` | Optional fixed cluster ID for `{{.ClusterID}}`; overrides the detected ID. Defaults to empty |
+| `cluster.detectID` | Defaults false; when true (with `rbac.create`), the chart adds a ClusterRole allowing only `get` on the `kube-system` namespace and uses its UID as the cluster ID |
+| `cluster.detectInterval` | How often to recheck the Kubernetes version and distribution; defaults to `1h`; `0` disables rechecks; otherwise at least `1m` |
+| `cluster.distributions` | Up to 20 `{match, name}` rules checked before the built-in distributions; `match` is a regex on the server `gitVersion`; `name` is 1-63 characters of `a-z`, `0-9`, `-`, `.` |
 | `watchNamespaces` | Unique, explicit allowlist; defaults to `default`; chart creates read-only Roles and RoleBindings there for Pods, Deployments, and Jobs. This access is fixed because tuber always watches all three, whatever `rules` select |
 | `credentials.existingSecret` | Required Secret in the release namespace; remains external to Helm |
 | `credentials.tokenKey` | Existing Secret key; defaults to `service-account-token` |
@@ -165,6 +171,68 @@ Stopping the old pod before starting the new one also avoids overlapping watcher
 This introduces brief downtime; lifecycle changes during downtime are not replayed
 when the new informer performs its initial list. Do not run multiple independent
 releases watching the same namespaces unless duplicate annotations are intended.
+
+## Self-hosted and generic clusters
+
+tuber runs on any conformant Kubernetes cluster, managed or self-hosted on VMs.
+Start from [examples/self-hosted.yaml](examples/self-hosted.yaml).
+
+**Provider.** `cluster.provider` is a free-form lowercase label (letters, digits,
+and `-`, up to 63 characters) shown as `{{.CloudProvider}}`. Use a documented value
+when one fits: `gcp-gke`, `aws-eks`, `azure-aks`, `self-hosted`, or `other`. Any
+other lowercase name, such as `k3s-edge`, is also accepted. The lowercase format
+is enforced by this chart's values schema only; the tuber runtime accepts any
+non-empty provider.
+
+**Version and distribution.** At startup tuber reads the API server's `/version`
+`gitVersion` and detects the distribution (k3s, RKE2, OpenShift, EKS, or GKE;
+otherwise `unknown`). This needs no extra permissions. OpenShift matching is a
+heuristic: an `openshift` token or a `+` suffix of seven or more hex digits.
+kubeadm, AKS, kind, minikube, Talos, and vanilla clusters report a plain `vX.Y.Z`
+and show as `unknown`; add a `cluster.distributions` rule to label them. tuber rechecks
+every `cluster.detectInterval` (default `1h`; `0` disables rechecks), so cluster
+upgrades are picked up without a pod restart. A failed check logs a warning and
+keeps the last good value; detection never blocks startup.
+
+**Cluster ID (opt-in).** Set `cluster.detectID: true` to use the `kube-system`
+namespace UID as `{{.ClusterID}}`. With `rbac.create: true` the chart then adds one
+ClusterRole and ClusterRoleBinding, named per release, that allow only `get` on the
+`kube-system` namespace. The default install creates no cluster-scoped objects. If
+`rbac.create` is false, grant that access yourself or tuber logs a warning and
+leaves the ID empty. To skip the permission entirely, set `cluster.id: my-cluster-id`;
+it overrides the detected ID. Clusters cloned or restored from backups can share a
+`kube-system` UID, so set `cluster.id` for those. The ID is not secret, but it
+appears in annotation text visible to anyone who can read your DoiT annotations.
+
+**Template variables.** Three variables are available in `doit.contentTemplate`.
+They render as empty text when not detected. The default template is unchanged.
+
+| Variable | Example | Source |
+| :--- | :--- | :--- |
+| `{{.ClusterVersion}}` | `v1.31.0+k3s1` | API server `gitVersion` |
+| `{{.Distribution}}` | `k3s` | First matching distribution rule, else `unknown` |
+| `{{.ClusterID}}` | `my-cluster-id` | `cluster.id`, else the detected `kube-system` UID |
+
+```yaml
+doit:
+  contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+```
+
+**Custom distribution rules.** If your platform is detected as `unknown` or as the
+wrong built-in, add a rule. Each `match` is a Go regular expression tested against
+the server `gitVersion` (see `kubectl version`). Your rules run before the
+built-ins, and the first match wins:
+
+```yaml
+cluster:
+  distributions:
+    - match: "\\+my-distro"
+      name: my-distro
+```
+
+**Kustomize.** The Kustomize manifests do not include the ClusterRole. Set
+`cluster.id` by hand in your ConfigMap (or the `TUBER_CLUSTER_ID` environment
+variable) to populate `{{.ClusterID}}`.
 
 ## Upgrade, rotate credentials, and uninstall
 

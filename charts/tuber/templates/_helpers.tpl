@@ -37,8 +37,23 @@ app.kubernetes.io/managed-by: {{ .Release.Service | quote }}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- $cluster := .Values.cluster -}}
 cluster:
-  {{- toYaml .Values.cluster | nindent 2 }}
+  {{- toYaml (pick $cluster "name" "provider" "region") | nindent 2 }}
+  {{- with $cluster.id }}
+  id: {{ . | quote }}
+  {{- end }}
+  {{- if $cluster.detectID }}
+  detectID: true
+  {{- end }}
+  {{- /* The runtime default is 1h, so only a different interval is rendered; 0 is a value. */}}
+  {{- if and (not (kindIs "invalid" $cluster.detectInterval)) (ne (toString $cluster.detectInterval) "1h") }}
+  detectInterval: {{ $cluster.detectInterval | toString | quote }}
+  {{- end }}
+  {{- with $cluster.distributions }}
+  distributions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 watchNamespaces:
   {{- toYaml .Values.watchNamespaces | nindent 2 }}
 dryRun: {{ .Values.dryRun }}

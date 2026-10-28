@@ -35,6 +35,8 @@ func writeConfigPreview(w io.Writer, cfg *config.Config) error {
 	payload, err := f.Format(model.WorkloadEvent{
 		ClusterName: cfg.Cluster.Name, CloudProvider: cfg.Cluster.Provider,
 		Region: cfg.Cluster.Region, Namespace: cfg.WatchNamespaces[0],
+		ClusterVersion: config.SampleClusterVersion, Distribution: config.SampleDistribution,
+		ClusterID:  config.SampleClusterID,
 		APIVersion: "apps/v1", Kind: "Deployment", Name: "sample-app",
 		UID: "sample-uid", Action: model.ActionCreated,
 		Summary: "replicas=3 images=app=example:v1",
@@ -50,7 +52,7 @@ func writeConfigPreview(w io.Writer, cfg *config.Config) error {
 		ValidateOnStartup: cfg.DoiT.ValidateOnStartupEnabled(),
 		RejectUserTokens:  cfg.DoiT.RejectUserTokensEnabled(),
 		SampleAnnotation:  payload.Content,
-		SampleNote:        "Synthetic Deployment Created example for template formatting only. Rules are listed in first-match order; selectors, rule routing, and workload overrides are not simulated.",
+		SampleNote:        "Synthetic Deployment Created example for template formatting only. Rules are listed in first-match order; selectors, rule routing, and workload overrides are not simulated. Cluster version, distribution, and ID use fixed sample values; the cluster is not contacted.",
 	}
 	enc := yaml.NewEncoder(w)
 	enc.SetIndent(2)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"text/template"
 	"time"
@@ -25,7 +26,21 @@ const (
 	DefaultDedupTTL        = 5 * time.Minute
 	DefaultWorkerCount     = 2
 	DefaultShutdownTimeout = 15 * time.Second
+	DefaultDetectInterval  = time.Hour
+
+	// MinDetectInterval is the shortest non-zero cluster.detectInterval accepted.
+	MinDetectInterval = time.Minute
+	// MaxDistributionRules caps the number of user-defined cluster.distributions entries.
+	MaxDistributionRules = 20
+
+	// Sample cluster detection values used by offline modes (--validate-only, --preview-config),
+	// which never contact the Kubernetes API server.
+	SampleClusterVersion = "v1.31.0"
+	SampleDistribution   = "k3s"
+	SampleClusterID      = "sample-cluster-id"
 )
+
+var distributionNamePattern = regexp.MustCompile(`^[a-z0-9.-]{1,63}$`)
 
 // Config represents the top-level declarative configuration for tuber.
 type Config struct {
@@ -45,6 +60,58 @@ type ClusterConfig struct {
 	Name     string `yaml:"name"`
 	Provider string `yaml:"provider"` // e.g., "gcp-gke", "aws-eks"
 	Region   string `yaml:"region"`
+	// ID overrides the detected cluster ID. When empty and DetectID is true, the kube-system namespace UID is used.
+	ID       string `yaml:"id"`
+	DetectID bool   `yaml:"detectID"`
+	// DetectInterval controls how often version, distribution, and ID detection reruns.
+	// Unset defaults to DefaultDetectInterval; 0 disables rechecks after startup.
+	DetectInterval *Duration `yaml:"detectInterval"`
+	// Distributions are user rules evaluated in order before the built-in distribution rules.
+	Distributions []DistributionRule `yaml:"distributions"`
+}
+
+// DistributionRule maps an API server gitVersion regular expression (Go RE2 syntax) to a distribution name.
+type DistributionRule struct {
+	Match string `yaml:"match"`
+	Name  string `yaml:"name"`
+}
+
+// DetectIntervalOrDefault returns the effective detection interval; 0 means rechecks are disabled.
+func (c ClusterConfig) DetectIntervalOrDefault() time.Duration {
+	if c.DetectInterval == nil {
+		return DefaultDetectInterval
+	}
+	return time.Duration(*c.DetectInterval)
+}
+
+// Duration is a time.Duration that also decodes a bare YAML integer 0 (the documented way to
+// disable a recurring check). Any other value must be a Go duration string such as "90s" or "1h".
+type Duration time.Duration
+
+// UnmarshalYAML accepts 0, "0", and Go duration strings; non-zero bare integers are rejected
+// because their unit would be ambiguous.
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("line %d: duration must be a scalar such as 0, 90s, or 1h", node.Line)
+	}
+	if node.ShortTag() == "!!int" {
+		if strings.Trim(node.Value, "+-0") != "" {
+			return fmt.Errorf("line %d: duration %s has no unit; use 0 to disable or add a unit such as %ss or %sm", node.Line, node.Value, node.Value, node.Value)
+		}
+		*d = 0
+		return nil
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(node.Value))
+	if err != nil {
+		return fmt.Errorf("line %d: invalid duration %q: use 0 to disable or a duration such as 90s, 5m, or 1h", node.Line, node.Value)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+// MarshalYAML renders the duration as a string (e.g. "1h0m0s"), matching time.Duration.
+func (d Duration) MarshalYAML() (any, error) {
+	return time.Duration(d).String(), nil
 }
 
 // DoiTConfig configures authentication, targeting, and rate-limiting for the DoiT Annotations API.
@@ -294,6 +361,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v := strings.TrimSpace(os.Getenv("TUBER_CLUSTER_REGION")); v != "" {
 		cfg.Cluster.Region = v
 	}
+	if v := strings.TrimSpace(os.Getenv("TUBER_CLUSTER_ID")); v != "" {
+		cfg.Cluster.ID = v
+	}
 	if v := strings.TrimSpace(os.Getenv("TUBER_WATCH_NAMESPACES")); v != "" {
 		parts := strings.Split(v, ",")
 		var nsList []string
@@ -425,6 +495,12 @@ func applyDefaults(cfg *Config) {
 	if len(cfg.Rules) == 0 {
 		cfg.Rules = DefaultRules()
 	}
+
+	cfg.Cluster.ID = strings.TrimSpace(cfg.Cluster.ID)
+	if cfg.Cluster.DetectInterval == nil {
+		interval := Duration(DefaultDetectInterval)
+		cfg.Cluster.DetectInterval = &interval
+	}
 }
 
 // Validate checks that all required fields and invariants are satisfied.
@@ -434,6 +510,9 @@ func (c *Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Cluster.Provider) == "" {
 		return errors.New("cluster.provider is required (e.g. 'gcp-gke' or 'aws-eks')")
+	}
+	if err := validateClusterDetection(c.Cluster); err != nil {
+		return err
 	}
 
 	if len(c.WatchNamespaces) == 0 {
@@ -472,16 +551,19 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid doit.contentTemplate: %w", err)
 	}
 	sample := model.WorkloadEvent{
-		ClusterName:   c.Cluster.Name,
-		CloudProvider: c.Cluster.Provider,
-		Region:        c.Cluster.Region,
-		Namespace:     c.WatchNamespaces[0],
-		Kind:          "Deployment",
-		APIVersion:    "apps/v1",
-		Name:          "sample-app",
-		Action:        model.ActionCreated,
-		Summary:       "replicas=3 image=nginx:latest",
-		Timestamp:     time.Now().UTC(),
+		ClusterName:    c.Cluster.Name,
+		CloudProvider:  c.Cluster.Provider,
+		Region:         c.Cluster.Region,
+		ClusterVersion: SampleClusterVersion,
+		Distribution:   SampleDistribution,
+		ClusterID:      SampleClusterID,
+		Namespace:      c.WatchNamespaces[0],
+		Kind:           "Deployment",
+		APIVersion:     "apps/v1",
+		Name:           "sample-app",
+		Action:         model.ActionCreated,
+		Summary:        "replicas=3 image=nginx:latest",
+		Timestamp:      time.Now().UTC(),
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, sample); err != nil {
@@ -502,6 +584,27 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateClusterDetection(c ClusterConfig) error {
+	if interval := c.DetectIntervalOrDefault(); interval < 0 || (interval > 0 && interval < MinDetectInterval) {
+		return fmt.Errorf("cluster.detectInterval %s must be 0 (disabled) or at least %s", interval, MinDetectInterval)
+	}
+	if len(c.Distributions) > MaxDistributionRules {
+		return fmt.Errorf("cluster.distributions has %d rules; at most %d are allowed", len(c.Distributions), MaxDistributionRules)
+	}
+	for i, rule := range c.Distributions {
+		if strings.TrimSpace(rule.Match) == "" {
+			return fmt.Errorf("cluster.distributions[%d].match is required", i)
+		}
+		if _, err := regexp.Compile(rule.Match); err != nil {
+			return fmt.Errorf("cluster.distributions[%d].match %q is not a valid regular expression: %w", i, rule.Match, err)
+		}
+		if !distributionNamePattern.MatchString(rule.Name) {
+			return fmt.Errorf("cluster.distributions[%d].name %q must be 1-63 characters of a-z, 0-9, '-', or '.'", i, rule.Name)
+		}
+	}
 	return nil
 }
 

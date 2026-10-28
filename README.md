@@ -404,6 +404,7 @@ The binary does not automatically load `.env` files:
 | `TUBER_CLUSTER_NAME` | `cluster.name` | Cluster identifier shown in annotations |
 | `TUBER_CLOUD_PROVIDER` | `cluster.provider` | Cloud provider (`gcp-gke`, `aws-eks`, etc.) |
 | `TUBER_CLUSTER_REGION` | `cluster.region` | Cloud region (`us-central1`, `us-east-1`, etc.) |
+| `TUBER_CLUSTER_ID` | `cluster.id` | Fixed cluster ID shown as `{{.ClusterID}}` |
 | `TUBER_WATCH_NAMESPACES` | `watchNamespaces` | Comma-separated namespace allowlist (e.g. `default,production,payments`) |
 | `DOIT_BASE_URL` | `doit.baseURL` | DoiT API base URL (default `https://api.doit.com`) |
 | `DOIT_SERVICE_ACCOUNT_TOKEN` | `doit.serviceAccountToken` | DoiT Service Account Bearer token |
@@ -436,6 +437,81 @@ kubectl apply -k deploy/kustomize/overlays/gke
 kubectl -n tuber-system rollout restart deployment/tuber
 kubectl -n tuber-system rollout status deployment/tuber
 ```
+
+---
+
+## Self-hosted and generic clusters
+
+`tuber` runs on any conformant Kubernetes cluster, including clusters you run
+yourself on VMs. With Helm, start from
+[charts/tuber/examples/self-hosted.yaml](charts/tuber/examples/self-hosted.yaml);
+the [chart guide](charts/tuber/README.md#self-hosted-and-generic-clusters) covers
+the matching values.
+
+**Provider values.** `cluster.provider` is a free-form lowercase label (letters,
+digits, and `-`, up to 63 characters) rendered as `{{.CloudProvider}}`. Use a
+documented value when one fits: `gcp-gke`, `aws-eks`, `azure-aks`, `self-hosted`,
+or `other`. Any other lowercase name is accepted as a fallback. The lowercase
+format is enforced by the Helm chart schema only; the `tuber` runtime accepts any
+non-empty `cluster.provider`.
+
+**Version and distribution detection.** At startup `tuber` reads the API server's
+`/version` `gitVersion` and detects the distribution: k3s, RKE2, OpenShift, EKS,
+or GKE, otherwise `unknown`. No extra permissions are needed. OpenShift is
+recognized by an `openshift` token or, heuristically, by a `+` suffix of seven or
+more hex digits (for example `v1.29.5+29a0d23`). kubeadm, AKS, kind, minikube,
+Talos, and vanilla clusters report a plain `vX.Y.Z` that cannot be told apart, so
+they show as `unknown`; add a `cluster.distributions` rule (for example
+`{match: "^v\\d+\\.\\d+\\.\\d+$", name: kubeadm}`) to label them.
+Detection reruns every `cluster.detectInterval` (default `1h`; `0` disables
+rechecks; otherwise at least `1m`), so upgrades are picked up without a restart.
+A failed check logs a warning and keeps the last good value; it never blocks startup.
+
+**Cluster ID (opt-in).** With `cluster.detectID: true`, `tuber` uses the
+`kube-system` namespace UID as the cluster ID. The Helm chart then adds a single
+ClusterRole and ClusterRoleBinding, named per release, that allow only `get` on the
+`kube-system` namespace; the default install has no cluster-scoped access. A
+missing permission logs a warning and leaves the ID empty. `cluster.id` (or
+`TUBER_CLUSTER_ID`) overrides the detected value and needs no permission. Clusters
+cloned or restored from backups can share the same `kube-system` UID, so set
+`cluster.id` for them. The ID is not secret, but it appears in annotation text
+visible to anyone who can read your DoiT annotations.
+
+**Template variables.** Three variables are available in `doit.contentTemplate`
+and render as empty text when not detected. The default template is unchanged.
+
+| Template Variable | Example Value | Description |
+| :--- | :--- | :--- |
+| `{{.ClusterVersion}}` | `v1.31.0+k3s1` | API server `gitVersion` |
+| `{{.Distribution}}` | `k3s` | First matching distribution rule, else `unknown` |
+| `{{.ClusterID}}` | `my-cluster-id` | `cluster.id`, else the detected `kube-system` UID |
+
+```yaml
+doit:
+  contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"
+```
+
+Offline modes (`--validate-only`, `--preview-config`) use the sample values
+`v1.31.0`, `k3s`, and `sample-cluster-id`.
+
+**Adding your own distribution rule.** Each rule's `match` is a Go regular
+expression tested against the server `gitVersion` (shown by `kubectl version`).
+Rules in `cluster.distributions` run before the built-ins and the first match
+wins, so a rule can also correct a wrong built-in match. Up to 20 rules; names are
+1-63 characters of `a-z`, `0-9`, `-`, and `.`:
+
+```yaml
+cluster:
+  name: my-cluster
+  provider: self-hosted
+  distributions:
+    - match: "\\+my-distro"
+      name: my-distro
+```
+
+**Kustomize.** The Kustomize manifests stay namespace-scoped and do not include
+the ClusterRole. Set `cluster.id` by hand in your ConfigMap (or set
+`TUBER_CLUSTER_ID` on the container) to populate `{{.ClusterID}}`.
 
 ---
 

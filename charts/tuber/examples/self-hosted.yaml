@@ -1,0 +1,22 @@
+cluster:
+  name: my-cluster
+  provider: self-hosted
+  # Opt in to reading the kube-system namespace UID as {{.ClusterID}}.
+  # Adds a ClusterRole allowing only `get` on that one namespace.
+  detectID: true
+  # Or set a fixed ID instead (recommended for cloned or restored clusters):
+  # id: my-cluster-id
+  # Extra distribution rules run before the built-ins (k3s, rke2, openshift, eks,
+  # gke); first match wins. A plain vX.Y.Z version (kubeadm, AKS, kind, Talos, ...)
+  # is reported as "unknown" unless a rule labels it.
+  # distributions:
+  #   - match: "\\+my-distro"
+  #     name: my-distro
+  #   - match: "^v\\d+\\.\\d+\\.\\d+$"
+  #     name: kubeadm
+watchNamespaces:
+  - default
+credentials:
+  existingSecret: tuber-doit-credentials
+# doit:
+#   contentTemplate: "[{{.Distribution}} {{.ClusterVersion}}/{{.ClusterName}} {{.ClusterID}}] {{.Namespace}}/{{.Kind}}/{{.Name}} {{.Action}}: {{.Summary}}"

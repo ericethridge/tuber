@@ -8,8 +8,8 @@ Status: design validated, not yet implemented.
   or managed, and annotate DoiT reports from it. The runtime already accepts any
   `cluster.provider` string; the restriction is in the Helm schema, docs, and examples.
 - **Detection:** at startup tuber detects the Kubernetes version and distribution
-  (k3s, RKE2, OpenShift, kubeadm, EKS, GKE, AKS) from the API server's `/version`
-  `gitVersion`. No extra permissions are needed for this.
+  (built-ins: k3s, RKE2, OpenShift, EKS, GKE; otherwise `unknown`) from the API
+  server's `/version` `gitVersion`. No extra permissions are needed for this.
 - **Cluster ID:** a stable ID comes from the `kube-system` namespace UID. It needs an
   opt-in, narrow ClusterRole (`get` on `kube-system` only). `cluster.id` overrides it.
 - **Output:** three new template variables, `{{.ClusterVersion}}`, `{{.Distribution}}`,
@@ -36,10 +36,11 @@ Status: design validated, not yet implemented.
 | 2 | Cluster ID is opt-in (`cluster.detectID`), via a ClusterRole limited to `get` on `kube-system`; `cluster.id` overrides | No permission, manual ID only; on by default | Keeps the namespace-scoped default; the opt-in role is small and easy to review |
 | 3 | New template variables only; default template unchanged | Change the default template; a richer default for non-cloud providers | Backward compatible, no surprise changes to existing annotation text |
 | 4 | Provider is a free-form lowercase string with documented values (`gcp-gke`, `aws-eks`, `azure-aks`, `self-hosted`, `other`) | Strict enum; free-form with no guidance | Supports any platform while guiding users |
-| 5 | Small built-in distribution set with `unknown` fallback; users add rules via `cluster.distributions` (first match wins, user rules first) | Built-in only, extended by pull request | Customers on unusual platforms are not blocked on a release |
+| 5 | Small built-in distribution set (k3s, rke2, openshift, eks, gke) with `unknown` fallback; users add rules via `cluster.distributions` (first match wins, user rules first) | Built-in only, extended by pull request | Customers on unusual platforms are not blocked on a release |
 | 6 | Dedicated docs section and `examples/self-hosted.yaml`; Kustomize path is docs only | Docs in the existing sections only | Self-hosted setup has its own concerns (RBAC, custom rules) |
 | 7 | Rerun detection on an in-process ticker (`cluster.detectInterval`, default 1h, `0` disables); keep the last good value on failure; a detected ID is permanent | Detect once at startup; a Kubernetes CronJob | Upgrades happen without pod restarts; a ticker needs no new objects |
 | 8 | Approach 1: detector in the runtime with a table-driven rule list | Built-in table only; richer detection from node labels or ConfigMaps | Meets the extensibility need without cluster-wide read access |
+| 9 | Built-ins limited to k3s, rke2, openshift, eks, gke | Built-in kubeadm and AKS rules | kubeadm and AKS cannot be distinguished from the version string alone; a plain version is `unknown` and users add rules for others |
 
 ## Design
 
@@ -47,9 +48,13 @@ Status: design validated, not yet implemented.
 
 - New package `internal/cluster` exposing `Detect(ctx, clientset, cfg) Info` with
   `Version`, `Distribution`, and `ID`.
-- `Version` and `Distribution` come from `ServerVersion().GitVersion`. Distribution
-  rules are ordered regexes (user rules first, then built-ins); no match gives
-  `unknown`. The ID is read from the `kube-system` namespace UID when `detectID` is
+- `Version` and `Distribution` come from the `/version` `gitVersion`, read through
+  the discovery REST client with the detection context so a hung API server cannot
+  leave a request running. Distribution rules are ordered regexes (user rules first,
+  then the built-ins `\+k3s`, `\+rke2`, `openshift` or the heuristic `+<7+ hex>`
+  OpenShift commit suffix, `-eks-`, `-gke.`); no match, including any plain
+  `vX.Y.Z` (kubeadm, AKS, kind, Talos), gives `unknown`.
+  The ID is read from the `kube-system` namespace UID when `detectID` is
   true and `cluster.id` is empty.
 - `cmd/tuber/main.go` calls `Detect` once after creating the Kubernetes client, with
   a timeout of about 5 seconds, and passes the result to the watcher manager.
@@ -72,7 +77,9 @@ Status: design validated, not yet implemented.
 - Rechecks run on the ticker behind an atomic value or lock. A failed or timed-out
   recheck keeps the previous value and logs a warning; a changed version or
   distribution is logged. A forbidden `kube-system` read logs a clear warning naming
-  the missing permission and continues with an empty ID.
+  the missing permission and continues with an empty ID. Forbidden and not-found ID
+  failures warn once (saying they retry every interval), then log at debug until a
+  lookup succeeds.
 
 ### Config, chart, and docs
 
@@ -89,7 +96,8 @@ cluster:
 ```
 
 - Validation: regexes must compile; names are 1-63 characters of `a-z`, `0-9`, `-`, `.`;
-  at most 20 rules; `detectInterval` is `0` or at least `1m`. Environment override:
+  at most 20 rules; `detectInterval` is `0` (integer or string) or a duration of at
+  least `1m`; a bare non-zero integer is rejected because its unit is ambiguous. Environment override:
   `TUBER_CLUSTER_ID` only.
 - Chart: new values and schema entries; free-form provider pattern (lowercase,
   up to 63 characters); a ClusterRole and ClusterRoleBinding rendered only when

@@ -1,10 +1,40 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/ericethridge/tuber/internal/doit"
 )
+
+type blockingValidator struct{}
+
+func (blockingValidator) ValidateServiceAccount(ctx context.Context) (*doit.ValidateResponse, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestValidateTokenHonorsShutdownContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, err := validateToken(ctx, blockingValidator{}, time.Hour)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("validateToken() error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("validateToken() took %s after shutdown", elapsed)
+	}
+
+	_, err = validateToken(context.Background(), blockingValidator{}, 10*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("validateToken() error = %v, want context.DeadlineExceeded", err)
+	}
+}
 
 func TestBuildKubeConfigUsesMergedEnvironmentFiles(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")

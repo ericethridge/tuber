@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ericethridge/tuber/internal/model"
 )
@@ -347,5 +348,98 @@ func TestLoadValidationUnwrapsKubernetesConfigMapManifests(t *testing.T) {
 		if len(cfg.WatchNamespaces) == 0 {
 			t.Errorf("LoadValidation(%q) returned empty WatchNamespaces", p)
 		}
+	}
+}
+
+func TestClusterDetectionConfig(t *testing.T) {
+	t.Setenv("TUBER_CLUSTER_ID", "")
+	base := "cluster:\n  name: edge\n  provider: self-hosted\n"
+	tail := "watchNamespaces: [default]\ndryRun: true\n"
+	var manyRules strings.Builder
+	manyRules.WriteString("  distributions:\n")
+	for i := 0; i <= MaxDistributionRules; i++ {
+		manyRules.WriteString("    - {match: 'x', name: d}\n")
+	}
+	tests := []struct {
+		name         string
+		cluster      string
+		wantErr      string
+		wantInterval time.Duration
+		wantRules    int
+	}{
+		{name: "defaults", wantInterval: DefaultDetectInterval},
+		{name: "zero disables", cluster: "  detectInterval: 0s\n", wantInterval: 0},
+		{name: "integer zero disables", cluster: "  detectInterval: 0\n", wantInterval: 0},
+		{name: "string zero disables", cluster: "  detectInterval: \"0\"\n", wantInterval: 0},
+		{name: "seconds above minimum", cluster: "  detectInterval: 90s\n", wantInterval: 90 * time.Second},
+		{name: "minimum interval", cluster: "  detectInterval: 1m\n", wantInterval: time.Minute},
+		{name: "below minimum", cluster: "  detectInterval: 30s\n", wantErr: "must be 0 (disabled) or at least 1m0s"},
+		{name: "negative", cluster: "  detectInterval: -1h\n", wantErr: "detectInterval"},
+		{name: "malformed string", cluster: "  detectInterval: hourly\n", wantErr: `invalid duration "hourly"`},
+		{name: "empty string", cluster: "  detectInterval: \"\"\n", wantErr: "invalid duration"},
+		{name: "non-zero bare integer", cluster: "  detectInterval: 3600\n", wantErr: "duration 3600 has no unit"},
+		{name: "mapping value", cluster: "  detectInterval: {h: 1}\n", wantErr: "must be a scalar"},
+		{
+			name:         "valid rules",
+			cluster:      "  detectID: true\n  id: my-id\n  distributions:\n    - match: '\\+my-distro'\n      name: my-distro.v2\n",
+			wantInterval: DefaultDetectInterval,
+			wantRules:    1,
+		},
+		{name: "invalid regex", cluster: "  distributions:\n    - {match: '(unclosed', name: x}\n", wantErr: "not a valid regular expression"},
+		{name: "empty match", cluster: "  distributions:\n    - {match: '', name: x}\n", wantErr: "match is required"},
+		{name: "uppercase name", cluster: "  distributions:\n    - {match: 'x', name: MyDistro}\n", wantErr: "name"},
+		{name: "empty name", cluster: "  distributions:\n    - {match: 'x', name: ''}\n", wantErr: "name"},
+		{name: "name too long", cluster: "  distributions:\n    - {match: 'x', name: " + strings.Repeat("a", 64) + "}\n", wantErr: "name"},
+		{name: "too many rules", cluster: manyRules.String(), wantErr: "at most 20"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Parse([]byte(base + tc.cluster + tail))
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("Parse() error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+			if got := cfg.Cluster.DetectIntervalOrDefault(); got != tc.wantInterval {
+				t.Errorf("DetectInterval = %s, want %s", got, tc.wantInterval)
+			}
+			if len(cfg.Cluster.Distributions) != tc.wantRules {
+				t.Errorf("Distributions = %v, want %d rules", cfg.Cluster.Distributions, tc.wantRules)
+			}
+		})
+	}
+}
+
+func TestClusterIDEnvOverride(t *testing.T) {
+	t.Setenv("TUBER_CLUSTER_ID", "  env-cluster-id ")
+	cfg, err := Parse([]byte("cluster:\n  name: edge\n  provider: self-hosted\n  id: file-id\nwatchNamespaces: [default]\ndryRun: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Cluster.ID != "env-cluster-id" {
+		t.Errorf("Cluster.ID = %q, want env-cluster-id", cfg.Cluster.ID)
+	}
+}
+
+func TestOfflineValidationUsesSampleClusterValues(t *testing.T) {
+	t.Setenv("TUBER_CLUSTER_ID", "")
+	tmpl := "{{.Distribution}}/{{.ClusterVersion}}/{{.ClusterID}}"
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "cluster:\n  name: edge\n  provider: self-hosted\nwatchNamespaces: [default]\ndoit:\n  contentTemplate: '" + tmpl + "'\n  serviceAccountTokenFile: /nonexistent/token\n"
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadPreview(path); err != nil {
+		t.Errorf("LoadPreview() rejected new template variables: %v", err)
+	}
+	if _, err := LoadValidation(path); err != nil {
+		t.Errorf("LoadValidation() rejected new template variables: %v", err)
+	}
+	if SampleClusterVersion != "v1.31.0" || SampleDistribution != "k3s" || SampleClusterID != "sample-cluster-id" {
+		t.Errorf("sample values changed: %s %s %s", SampleClusterVersion, SampleDistribution, SampleClusterID)
 	}
 }
